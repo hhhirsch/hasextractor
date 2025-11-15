@@ -1,0 +1,79 @@
+# Default HAS fill-only extractor configuration for v2.4
+# Keeps backwards compatible section markers with v2.3d.
+targets:
+  Population:
+    patterns:
+      - '^Population\s*cible'
+      - '^Population\s+concern[ée]e'
+      - '^09\.?\s*Population\s*cible'
+      - "^[•\-–—\u2022\u2794\uF0A7]?\s*(?:Enfants?|Adolescents?|Adultes?|Femmes?|Hommes?|Personnes?).{0,80}?(?:âg[ée]s?\s+de\s+\d+(?:\s*(?:à|-|–|—)\s*\d+)?\s*ans|≥\s*\d+\s*ans|>\s*\d+\s*ans|<\s*\d+\s*ans)\b.*"
+      - "(?i)\bchez\s+les?\s+(?:patients?|personnes?)\s+(?:ambulatoires\s+)?(?:adultes?|enfants?|adolescents?|femmes?|hommes?).{0,120}"
+      - "(?i)\bpatients?\s+(?:[^\n]{0,60})?\bâg[ée]s?\s+de\s+\d+(?:\s*(?:à|-|–|—)\s*\d+)?\s*ans\b.*"
+      - "(?is)^Indication\s+concern[ée]e.*?\b(?:chez\s+les\s+)?patients?\b[^\n]{0,160}?\bâg[ée]s?\s+de\s+\d+(?:\s*à\s*\d+)?\s*ans\b.*"
+    stop_after:
+      - '^Autres\s+recommandations'
+      - '^Conditionnements?'
+      - '^HAS\s*•'
+      - '^Place\s+du\s+m[ée]dicament'
+      - '^Service\s+M[ée]dical\s+Rendu'
+      - '^SMR\b'
+      - '^Crit[èe]res?\s+d[’']?[ée]ligibilit[ée]'
+      - '^Contexte\b'
+      - '^Synth[èe]se\b'
+      - '^Prise\s+en\s+charge'
+    forbid:
+      - '\b(\d+([\.,]\d+)?)\s*(%|mg|µg|mcg|ml|ans|mois)\b'
+  Subpopulation:
+    patterns:
+      - '^Sous-population'
+      - '^Sous\s+populations?'
+      - '^Population\s+sp[ée]cifique'
+    stop_after:
+      - '^Autres\s+recommandations'
+      - '^Conditionnements?'
+      - '^HAS\s*•'
+  Indication (normalized):
+    patterns:
+      - "^Indications?\s+de\s+l[’']AMM"
+      - "^Indications?\s+concern[ée]es?\s+par\s+l[’']évaluation"
+      - "^Libell[ée]\s+de\s+l[’']indication"
+      - "^Indication\s+concer[\- ]n[ée]e\s+par"
+      - "^Indication\s+concern[ée]e"
+      - "^Indication\s*:\s*"
+      - "^Indications?\s*:\s*"
+    stop_after:
+      - '^DCI\b'
+      - '^ATC\b'
+      - '^Pr[ée]sentations?\s+concern[ée]es?'
+      - '^Listes?\s+concern[ée]es?'
+      - '^Conditions?\s+de\s+prescription'
+      - '^AMM\s*\('
+      - '^Laboratoire'
+      - '^Taux\s+de\s+remboursement'
+      - '^Service\s+M[ée]dical\s+Rendu'
+      - '^Place\s+du\s+m[ée]dicament'
+      - '^Autres\s+recommandations'
+      - '^HAS\s*•'
+  Comparator(s):
+    patterns:
+      - '^Comparateurs?\s+cliniquement\s+pertinents?'
+      - '^Strat[ée]gies?\s+comparatives?'
+      - '^Comparateurs?\s*:'
+      - '^Liste\s+des\s+traitements.*\b[ée]valu[ée]s?\s+par\s+CT'
+    stop_after:
+      - '^Service\s+M[ée]dical\s+Rendu'
+      - '^Place\s+du\s+m[ée]dicament'
+      - '^Autres\s+recommandations'
+      - '^HAS\s*•'
+    forbid:
+      - '\b(\d+([\.,]\d+)?)\s*(%|mg|µg|mcg|ml|ans|mois)\b'
+  Conclusion (CT):
+    patterns:
+      - 'avis\s+(favorable|d[ée]favorable)'
+      - '\b(maintien|renouvellement)\s+d[’'']inscription\b'
+      - '\b(non-)?inscription\b'
+      - 'taux\s+de\s+remboursement\s*:\s*\d+\s*%'
+    stop_after:
+      - '^Autres\s+recommandations'
+      - '^HAS\s*•'
+      - '^Service\s+M[ée]dical\s+Rendu'
