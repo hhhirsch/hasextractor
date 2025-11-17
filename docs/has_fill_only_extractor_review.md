@@ -13,3 +13,10 @@
 3. **Opaque diagnostics for extraction failures.** When neither pdfminer nor PyPDF2 returns text the script silently sets `text = ""`, logs a row in `diag_rows`, and moves on. There is no log-level feedback, and the CSV row merely says `no_text`, so you cannot differentiate between parser crashes, encrypted PDFs, or empty files while the script is still running.
 
 The new implementation in `scripts/has_fill_only_extractor_v2_4.py` addresses these problems by introducing caching, structured extractors, reliable section slicing, and verbose logging.
+
+## v2.4 follow-up hardening
+
+- **RowProcessor orchestration.** The previously monolithic `process()` loop is now decomposed so that `RowProcessor` handles target extraction/inference per row. This makes unit testing feasible and keeps Single-Responsibility boundaries crisp.
+- **Typed custom exceptions.** Dedicated `PDFExtractionError`, `ConfigValidationError`, and `SpreadsheetProcessingError` types wrap failures from libraries such as pdfminer or pandas, so operators receive actionable error classes instead of opaque `Exception` logs.
+- **Documented regex intent.** The YAML configuration now documents why the longer Population patterns exist (bullets, Synthèse sentences, Contexte tables), reducing the debugging burden when analysts tweak thresholds.
+- **Regression tests.** `pytest` tests cover the Population patterns, comparator normaliser, population inference, and the new row processor, guarding against accidental regex regressions and ensuring the heuristics continue to match real-world snippets.
