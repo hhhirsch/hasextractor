@@ -5,11 +5,11 @@ targets:
       - '^Population\s+cible'
       - '^Population\s+pédiatrique'
       - '^Population\(s\)'
-      - '^Population\s+d'analyse'
-      - '^Populations\s+d'analyse'
+      - '^Population\s+d’analyse'
+      - '^Populations\s+d’analyse'
       - '^09\.3\s+Population\s+cible'
       - '^Populations\s+particulières'
-      - '^Population\s+de\s+l'AMM'
+      - '^Population\s+de\s+l’AMM'
       - '^Population\s+ITT'
       - '^04\.3\s+Population\s+cible'
       # Eingebettete Sätze (aus bestehender Config - wichtig!)
@@ -18,7 +18,7 @@ targets:
       
   Indication (normalized):
     patterns:
-      - '^Indication\s+concernée\s+par\s+l'évaluation'
+      - '^Indication\s+concernée\s+par\s+l’évaluation'
       - '^Indication\s+concernée'
       - "^Indications?\s+de\s+l['']AMM"  # Aus bestehend - wichtig!
       - "^Libell[ée]\s+de\s+l['']indication"  # Aus bestehend
