@@ -399,19 +399,29 @@ DEFAULT_CONFIG: Dict[str, Dict[str, Dict[str, List[str]]]] = {
 def load_config(path: Optional[Path]) -> dict:
     """Load configuration from ``path`` or fall back to the embedded YAML."""
 
-    if path is None or not path.exists():
-        if path and not path.exists():
-            logger.warning("config %s not found, using defaults", path)
+    if path is None:
         return copy.deepcopy(DEFAULT_CONFIG)
+
+    resolved = path.expanduser()
+    if not resolved.exists():
+        raise ConfigValidationError(f"config file {resolved} does not exist")
+    if resolved.is_dir():
+        raise ConfigValidationError(f"config path {resolved} is a directory, expected a file")
     if yaml is None:
         raise ConfigValidationError(
             "PyYAML is required to parse external config files; install pyyaml to continue"
         )
-    raw = path.read_text(encoding="utf-8")
     try:
-        return yaml.safe_load(raw)
+        raw = resolved.read_text(encoding="utf-8")
+    except OSError as exc:  # pragma: no cover - filesystem errors depend on env
+        raise ConfigValidationError(f"unable to read config file {resolved}: {exc}") from exc
+    try:
+        loaded = yaml.safe_load(raw)
     except yaml.YAMLError as exc:  # pragma: no cover - malformed config is rare
-        raise ConfigValidationError(f"invalid YAML config {path}: {exc}") from exc
+        raise ConfigValidationError(f"invalid YAML config {resolved}: {exc}") from exc
+    if not isinstance(loaded, dict):
+        raise ConfigValidationError(f"config file {resolved} must contain a mapping at the top level")
+    return loaded
 
 
 def map_ct_to_pdfs(pdf_root: Path) -> Dict[str, List[Path]]:
@@ -477,25 +487,64 @@ class RowProcessor:
         return updates
 
 
+def _sheet_has_content(frame: "pd.DataFrame") -> bool:
+    """Return True when ``frame`` exposes useful columns or rows."""
+
+    if frame.shape[1] == 0:
+        return False
+    if not frame.dropna(how="all").empty:
+        return True
+    for column in frame.columns:
+        if str(column).strip():
+            return True
+    return False
+
+
+def load_spreadsheet(excel_in: Path, sheet_name: Optional[str] = None) -> "pd.DataFrame":
+    """Load ``excel_in`` picking the requested or first non-empty worksheet."""
+
+    ensure_pandas()
+    try:
+        if sheet_name is not None:
+            logger.info("loading worksheet %s", sheet_name)
+            return pd.read_excel(excel_in, sheet_name=sheet_name)
+        sheets = pd.read_excel(excel_in, sheet_name=None)
+    except ValueError as exc:
+        raise SpreadsheetProcessingError(
+            f"sheet {sheet_name!r} not found in {excel_in}: {exc}"
+        ) from exc
+    except Exception as exc:  # pragma: no cover - depends on engine/runtime
+        raise SpreadsheetProcessingError(f"failed to read {excel_in}: {exc}") from exc
+
+    for name, frame in sheets.items():
+        if _sheet_has_content(frame):
+            logger.info("using worksheet %s", name)
+            return frame
+
+    first_name, first_frame = next(iter(sheets.items()))
+    logger.warning("all worksheets in %s are empty; defaulting to %s", excel_in, first_name)
+    return first_frame
+
+
 def process(
     pdf_root: Path,
     excel_in: Path,
     excel_out: Path,
     config_path: Optional[Path],
+    sheet_name: Optional[str] = None,
 ) -> None:
     """Drive the PDF-to-spreadsheet enrichment workflow."""
 
-    logger.info("loading config %s", config_path or "<embedded>")
     config = load_config(config_path)
+    logger.info(
+        "loaded config %s",
+        (config_path.expanduser().resolve() if config_path else "<embedded defaults>"),
+    )
     extractor = SectionExtractor(config)
     pdf_repo = PDFTextRepository()
 
     logger.info("loading spreadsheet %s", excel_in)
-    ensure_pandas()
-    try:
-        df = pd.read_excel(excel_in)
-    except Exception as exc:  # pragma: no cover - depends on engine/runtime
-        raise SpreadsheetProcessingError(f"failed to read {excel_in}: {exc}") from exc
+    df = load_spreadsheet(excel_in, sheet_name)
     for column in TARGETS:
         if column in df.columns:
             df[column] = df[column].astype("object")
@@ -615,6 +664,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
             "Optional YAML file overriding the embedded defaults; requires PyYAML when provided"
         ),
     )
+    parser.add_argument(
+        "--sheet-name",
+        default=None,
+        help="Optional worksheet name to load; the first non-empty sheet is used when omitted",
+    )
     parser.add_argument("--log-level", default="INFO")
     return parser
 
@@ -623,7 +677,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = build_argument_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(level=args.log_level.upper(), format="%(levelname)s %(message)s")
-    process(args.pdf_root, args.excel_in, args.excel_out, args.config)
+    process(args.pdf_root, args.excel_in, args.excel_out, args.config, args.sheet_name)
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI hook
