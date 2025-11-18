@@ -13,8 +13,9 @@ targets:
       - '^Population\s+ITT'
       - '^04\.3\s+Population\s+cible'
       # Eingebettete Sätze (diese zwei brauchen doppelte Quotes wegen \u-escapes)
-      - "^[•\\-–—\\u2022\\u2794]?\\s*(?:Enfants?|Adolescents?|Adultes?).{0,80}?âg[ée]s?\\s+de\\s+\\d+(?:\\s*(?:à|-)\\s*\\d+)?\\s*ans\\b"
-      - "(?i)\\bchez\\s+les?\\s+patients?\\s+(?:adultes?|enfants?).{0,120}"
+      - '^[•\-–—]?\s*(?:Enfants?|Adolescents?|Adultes?).{0,80}?âg[ée]s?\s+de\s+\d+(?:\s*(?:à|-)\s*\d+)?\s*ans\b'
+      - '(?i)\bchez\s+les?\s+patients?\s+(?:adultes?|enfants?).{0,120}'
+
 
   Indication (normalized):
     patterns:
