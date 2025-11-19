@@ -27,6 +27,24 @@ logger = logging.getLogger(__name__)
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 SOFT_HYPHEN = "\u00AD"
+
+def is_blank_cell(v) -> bool:
+    import math
+    if v is None:
+        return True
+    # pandas-NaN oder float('nan')
+    try:
+        if isinstance(v, float) and math.isnan(v):
+            return True
+    except Exception:
+        pass
+    # Strings: auch "nan", "NaN", "—", "–" als leer behandeln
+    if isinstance(v, str):
+        s = v.strip()
+        if s == "" or s.lower() == "nan" or s in {"—", "–", "-"}:
+            return True
+    return False
+
 TARGETS = [
     "Population",
     "Subpopulation",
@@ -442,10 +460,10 @@ class RowProcessor:
         for target in self.targets:
             if target not in row.index:
                 continue
-            current_value = row.get(target)
-            if current_value is not None and str(current_value).strip():
-                continue
-            
+            current = row.get(tgt, None)
+                if not is_blank_cell(current):
+                    continue
+
             snippet = get_snippet(target)
             
             # Subpopulation fallback: derive from indication
