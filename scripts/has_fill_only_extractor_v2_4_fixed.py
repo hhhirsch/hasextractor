@@ -32,13 +32,11 @@ def is_blank_cell(v) -> bool:
     import math
     if v is None:
         return True
-    # pandas-NaN oder float('nan')
     try:
         if isinstance(v, float) and math.isnan(v):
             return True
     except Exception:
         pass
-    # Strings: auch "nan", "NaN", "—", "–" als leer behandeln
     if isinstance(v, str):
         s = v.strip()
         if s == "" or s.lower() == "nan" or s in {"—", "–", "-"}:
@@ -57,19 +55,16 @@ UNIT_PATTERN = re.compile(r"\b(\d+([\.,]\d+)?)\s*(%|mg|µg|mcg|ml|ans|mois)\b", 
 
 
 class PDFExtractionError(RuntimeError):
-    """Raised when both PDF extraction backends fail for a file."""
-
+    pass
 
 class ConfigValidationError(RuntimeError):
-    """Raised when the YAML configuration cannot be parsed."""
-
+    pass
 
 class SpreadsheetProcessingError(RuntimeError):
-    """Raised when the spreadsheet could not be loaded."""
+    pass
 
 
 def ensure_pandas() -> None:
-    """Ensure pandas is available before touching spreadsheets."""
     if pd is None:
         raise SpreadsheetProcessingError(
             "pandas is required for spreadsheet processing; install pandas to continue"
@@ -77,9 +72,12 @@ def ensure_pandas() -> None:
 
 
 def extract_text_pdfminer(path: Path) -> str:
-    """Return the raw text of ``path`` using pdfminer."""
     try:
+        from pdfminer_high_level import extract_text  # type: ignore
+    except Exception:
+        # Most installations expose it here:
         from pdfminer.high_level import extract_text  # type: ignore
+    try:
         logger.debug("extracting %s with pdfminer", path)
         return extract_text(str(path)) or ""
     except Exception as exc:
@@ -87,7 +85,6 @@ def extract_text_pdfminer(path: Path) -> str:
 
 
 def extract_text_pypdf2(path: Path) -> str:
-    """Return the raw text of ``path`` using PyPDF2."""
     try:
         import PyPDF2  # type: ignore
         text: List[str] = []
@@ -110,7 +107,6 @@ def extract_text_pypdf2(path: Path) -> str:
 
 
 def extract_text_any(path: Path) -> str:
-    """Try pdfminer first, then PyPDF2, raising :class:`PDFExtractionError` on failure."""
     try:
         return extract_text_pdfminer(path)
     except PDFExtractionError:
@@ -119,7 +115,6 @@ def extract_text_any(path: Path) -> str:
 
 
 def normalize_text(raw: str) -> str:
-    """Clean up hyphenation and whitespace artefacts from ``raw`` text."""
     text = raw.replace(SOFT_HYPHEN, "")
     text = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", text)
     text = text.replace("\r", "")
@@ -129,11 +124,9 @@ def normalize_text(raw: str) -> str:
 
 @dataclass
 class PDFTextRepository:
-    """Caches raw and normalised PDF text."""
     cache: Dict[Path, str] = field(default_factory=dict)
 
     def get_normalized_text(self, path: Path) -> Optional[str]:
-        """Return cached, normalised text if possible, logging failures per file."""
         if path in self.cache:
             return self.cache[path]
         try:
@@ -156,8 +149,6 @@ class SectionSpec:
 
 
 class SectionExtractor:
-    """Extracts configured sections from normalised PDF text blobs."""
-
     def __init__(self, config: dict):
         self.specs: Dict[str, SectionSpec] = {}
         for name, cfg in config.get("targets", {}).items():
@@ -169,50 +160,40 @@ class SectionExtractor:
             )
 
     def extract(self, text: str, target: str) -> str:
-        """Return the snippet for ``target`` or an empty string when missing.
-        
-        FIXED: Uses v2.3d logic - takes first paragraph, then applies stop patterns.
+        """v2.3d-ähnliche Logik: Erst **ersten Absatz** nach Match nehmen,
+        dann mit Stop-Patterns ggf. weiter kürzen.
         """
         spec = self.specs.get(target)
         if not spec:
             return ""
-        
-        # Find first matching pattern
+
         match = None
         for pat in spec.patterns:
             match = pat.search(text)
             if match:
                 logger.debug("Matched pattern for %s at position %d", target, match.start())
                 break
-        
+
         if not match:
             logger.debug("No pattern match found for %s", target)
             return ""
-        
+
         after = text[match.end():]
-        
-        # CRITICAL FIX: First take only first paragraph (like v2.3d)
-        # This prevents extracting multiple pages of text
         snippet = after.strip().split("\n\n")[0].strip()
-        
-        # Then apply stop patterns to trim further if needed
         snippet = self._trim_with_stops(snippet, spec.stops)
-        
-        # Special case: if nothing after match, include the match itself
+
         if not snippet.strip() and target == "Population":
-            snippet = text[match.start() : match.end()]
-        
+            snippet = text[match.start():match.end()]
+
         snippet = self._sanitize_footer(snippet)
-        
+
         if target == "Comparator(s)":
             snippet = normalize_comparators(snippet)
-        
-        # Check forbid patterns
+
         if any(r.search(snippet) for r in spec.forbids):
             logger.debug("Snippet for %s rejected by forbid pattern", target)
             return ""
-        
-        logger.debug("Extracted %d chars for %s", len(snippet), target)
+
         return snippet.strip()
 
     @staticmethod
@@ -238,7 +219,6 @@ class SectionExtractor:
 
 
 def normalize_comparators(block: str) -> str:
-    """Normalise comparator blocks into a consistent semicolon-separated value."""
     stripped = block.strip()
     if not stripped:
         return stripped
@@ -265,9 +245,7 @@ def normalize_comparators(block: str) -> str:
                     items.append(cleaned)
         return "; ".join(items)
     if re.search(r"m[êe]mes? que .*autres pr[ée]sentations", stripped, re.I) or re.search(
-        r"sont les m[êe]mes que",
-        stripped,
-        re.I,
+        r"sont les m[êe]mes que", stripped, re.I,
     ):
         match = re.search(r"pr[ée]sentations?\s+d['']([A-Z0-9][A-Z0-9\-_]+)", stripped)
         product = match.group(1) if match else ""
@@ -283,7 +261,6 @@ class DiagnosticRow:
     reason: str
     used_ocr: bool = False
 
-
 @dataclass
 class ChangeRow:
     index: int
@@ -291,7 +268,6 @@ class ChangeRow:
     column: str
     new_value: str
     source_pdf: str
-
 
 @dataclass
 class UnmatchedRow:
@@ -394,25 +370,24 @@ DEFAULT_CONFIG: Dict[str, Dict[str, Dict[str, List[str]]]] = {
 
 
 def load_config(path: Optional[Path]) -> dict:
-    """Load configuration from ``path`` or fall back to embedded defaults."""
     if path is None:
         return copy.deepcopy(DEFAULT_CONFIG)
-    
+
     resolved = path.expanduser()
     if not resolved.exists():
         logger.warning("config %s not found, using defaults", resolved)
         return copy.deepcopy(DEFAULT_CONFIG)
-    
+
     if yaml is None:
         raise ConfigValidationError(
             "PyYAML is required to parse external config files; install pyyaml to continue"
         )
-    
+
     try:
         raw = resolved.read_text(encoding="utf-8")
         loaded = yaml.safe_load(raw)
         if not isinstance(loaded, dict):
-            raise ConfigValidationError(f"config file must contain a mapping at top level")
+            raise ConfigValidationError("config file must contain a mapping at top level")
         return loaded
     except yaml.YAMLError as exc:
         raise ConfigValidationError(f"invalid YAML config {resolved}: {exc}") from exc
@@ -421,7 +396,6 @@ def load_config(path: Optional[Path]) -> dict:
 
 
 def map_ct_to_pdfs(pdf_root: Path) -> Dict[str, List[Path]]:
-    """Return a mapping of CT identifiers to candidate PDF paths."""
     mapping: Dict[str, List[Path]] = {}
     for pdf in pdf_root.rglob("*.pdf"):
         match = RE_CT.search(pdf.name)
@@ -432,7 +406,6 @@ def map_ct_to_pdfs(pdf_root: Path) -> Dict[str, List[Path]]:
 
 
 def write_csv(path: Path, fieldnames: Sequence[str], rows: Sequence[dict]) -> None:
-    """Persist ``rows`` as CSV at ``path`` with the provided ``fieldnames`` order."""
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
@@ -441,8 +414,6 @@ def write_csv(path: Path, fieldnames: Sequence[str], rows: Sequence[dict]) -> No
 
 
 class RowProcessor:
-    """Derives column updates for a single spreadsheet row."""
-
     def __init__(self, extractor: SectionExtractor, targets: Sequence[str]):
         self.extractor = extractor
         self.targets = tuple(targets)
@@ -460,40 +431,35 @@ class RowProcessor:
         for target in self.targets:
             if target not in row.index:
                 continue
-            current = row.get(tgt, None)
-                if not is_blank_cell(current):
-                    continue
+
+            current = row.get(target, None)  # <-- FIX: 'target' statt 'tgt'
+            if not is_blank_cell(current):
+                continue
 
             snippet = get_snippet(target)
-            
+
             # Subpopulation fallback: derive from indication
             if target == "Subpopulation" and not snippet:
                 indication_hint = snippet_cache.get("Indication (normalized)") or get_snippet(
                     "Indication (normalized)"
                 )
                 snippet = infer_subpopulation(indication_hint)
-            
+
             # Population fallback: infer from text
             if target == "Population" and not snippet:
                 indication_hint = snippet_cache.get("Indication (normalized)") or get_snippet(
                     "Indication (normalized)"
                 )
                 snippet = infer_population(normalized_text, indication_hint)
-            
+
             if snippet:
                 snippet_cache[target] = snippet
                 updates[target] = snippet
-        
+
         return updates
 
 
-def process(
-    pdf_root: Path,
-    excel_in: Path,
-    excel_out: Path,
-    config_path: Optional[Path],
-) -> None:
-    """Drive the PDF-to-spreadsheet enrichment workflow."""
+def process(pdf_root: Path, excel_in: Path, excel_out: Path, config_path: Optional[Path]) -> None:
     config = load_config(config_path)
     logger.info(
         "loaded config from %s",
@@ -508,7 +474,7 @@ def process(
         df = pd.read_excel(excel_in)
     except Exception as exc:
         raise SpreadsheetProcessingError(f"failed to read {excel_in}: {exc}") from exc
-    
+
     for column in TARGETS:
         if column in df.columns:
             df[column] = df[column].astype("object")
@@ -530,7 +496,7 @@ def process(
         if not ct_value:
             unmatched.append(UnmatchedRow(index=idx, reason="no_ct_in_row"))
             continue
-        
+
         pdf_candidates = ct_to_pdfs.get(ct_value, [])
         if not pdf_candidates:
             unmatched.append(UnmatchedRow(index=idx, ct=ct_value, reason="no_pdf"))
@@ -543,7 +509,7 @@ def process(
             if normalized_text:
                 used_file = candidate
                 break
-        
+
         if not normalized_text:
             diagnostics.append(
                 DiagnosticRow(ct=ct_value, file=str(pdf_candidates[0]), reason="no_text")
@@ -562,7 +528,7 @@ def process(
                     source_pdf=str(used_file),
                 )
             )
-        
+
         diagnostics.append(
             DiagnosticRow(
                 ct=ct_value,
@@ -575,33 +541,27 @@ def process(
     df.to_excel(excel_out, index=False)
     logger.info("saved Excel to %s", excel_out)
 
-    change_rows = [change.__dict__ for change in changes]
-    diag_rows = [diag.__dict__ for diag in diagnostics]
-    unmatched_rows = [row.__dict__ for row in unmatched]
-
     write_csv(
         excel_out.with_suffix(".changes.csv"),
         ["index", "ct", "column", "new_value", "source_pdf"],
-        change_rows
+        [c.__dict__ for c in changes],
     )
     write_csv(
         excel_out.with_suffix(".pdf_diagnostics.csv"),
         ["ct", "file", "reason", "used_ocr"],
-        diag_rows
+        [d.__dict__ for d in diagnostics],
     )
-    if unmatched_rows:
+    if unmatched:
         write_csv(
             excel_out.with_suffix(".unmatched_cts.csv"),
             ["index", "ct", "reason"],
-            unmatched_rows
+            [u.__dict__ for u in unmatched],
         )
-    
-    logger.info("processed %d rows: %d changes, %d unmatched", 
-                len(df), len(changes), len(unmatched))
+
+    logger.info("processed %d rows: %d changes, %d unmatched", len(df), len(changes), len(unmatched))
 
 
 def infer_subpopulation(indication_hint: str) -> str:
-    """Extract a short biomarker/line-of-therapy token from indication text."""
     if not indication_hint:
         return ""
     match = re.search(
@@ -612,7 +572,6 @@ def infer_subpopulation(indication_hint: str) -> str:
 
 
 def infer_population(text: str, indication_hint: str = "") -> str:
-    """Infer a population snippet from free text or indication context."""
     blob = f"{indication_hint}\n{text}" if indication_hint else text
     patterns = [
         r"(?im)^[•\-\u2022\u2794]?\s*(?:Enfants?|Adolescents?|Adultes?|Femmes?|Hommes?|Personnes?).{0,80}?(?:âg[ée]s?\s+de\s+\d+(?:\s*(?:à|–|-|—)\s*\d+)?\s*ans|≥\s*\d+\s*ans|>\s*\d+\s*ans|<\s*\d+\s*ans)\b.*",
