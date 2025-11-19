@@ -29,6 +29,27 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_FILE = SCRIPT_DIR / "has_fill_only_config_v2_4.yml"
 
 SOFT_HYPHEN = "\u00AD"
+
+
+def is_blank_cell(value) -> bool:
+    """Return True when ``value`` should be treated as an empty spreadsheet cell."""
+
+    import math
+
+    if value is None:
+        return True
+    try:
+        if isinstance(value, float) and math.isnan(value):
+            return True
+    except Exception:  # pragma: no cover - defensive
+        pass
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped == "" or stripped.lower() == "nan" or stripped in {"—", "–", "-"}:
+            return True
+    return False
+
+
 TARGETS = [
     "Population",
     "Subpopulation",
@@ -468,7 +489,7 @@ class RowProcessor:
             if target not in row.index:
                 continue
             current_value = row.get(target)
-            if current_value is not None and str(current_value).strip():
+            if not is_blank_cell(current_value):
                 continue
             snippet = get_snippet(target)
             if target == "Subpopulation" and not snippet:
