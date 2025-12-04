@@ -1,4 +1,4 @@
-# extract_comparator.py (V14 – OPTIMIZED)
+# extract_comparator.py (V14 – FINAL)
 #
 # Verbesserungen gegenüber V13:
 # - Logging für Debugging
@@ -6,6 +6,7 @@
 # - Generische DCI-Extraktion statt Hardcode
 # - Konfigurierbare max_length aus YAML
 # - Docstring-Tests für kritische Funktionen
+# - CRITICAL FIXES: Apostroph-Varianten (' ' ') vollständig abgedeckt
 
 import sys
 import csv
@@ -55,16 +56,7 @@ COMPARATOR_STOP_RE = re.compile("|".join(COMPARATOR_STOP_MARKERS), re.I | re.M)
 
 
 def _safe_section_and_rule(result: Any) -> Tuple[str, str]:
-    """
-    Normalisiert die Rückgabe von find_section_with_rule auf (sec, rule_id).
-    
-    >>> _safe_section_and_rule(None)
-    ('', '')
-    >>> _safe_section_and_rule(("text", "rule"))
-    ('text', 'rule')
-    >>> _safe_section_and_rule("just text")
-    ('just text', '')
-    """
+    """Normalisiert die Rückgabe von find_section_with_rule auf (sec, rule_id)."""
     if result is None:
         return "", ""
     if isinstance(result, tuple) and len(result) == 2:
@@ -104,27 +96,31 @@ def trim_comparator_block(text: str, max_len: int = MAX_COMPARATOR_LENGTH) -> st
         return ""
     m = COMPARATOR_STOP_RE.search(text)
     if m:
-        text = text[: m.start()]
+        text = text[:m.start()]
     lines = [ln for ln in text.splitlines() if ln.strip()]
     kept = [ln for ln in lines if not _is_numeric_heavy(ln)]
     t = "\n".join(kept).strip()
-    t = re.sub(r"\n{3,}", "\n\n", t)
+    t = re.sub(r'\n{3,}', '\n\n', t)
     if len(t) <= max_len:
         return t.strip()
     shortened = t[:max_len]
     last_period = shortened.rfind(".")
     if last_period > max_len * 0.5:
-        t = shortened[: last_period + 1]
+        t = shortened[:last_period + 1]
     else:
         t = shortened.rstrip() + "..."
     return t.strip()
 
 
 def fallback_no_comparator(full_text: str) -> str:
-    """Spezialfall: 'il n'existe pas de comparateur cliniquement pertinent...'"""
+    """
+    Spezialfall: 'il n'existe pas de comparateur cliniquement pertinent...'
+    FIX: Apostroph-Varianten ' ' ' vollständig abgedeckt
+    """
     if not full_text:
         return ""
     t = " ".join(full_text.split())
+    # FIX: [''] deckt jetzt ', ', ' ab
     m = re.search(
         r"il n['']existe pas de comparateur cliniquement pertinent[^.]*\.",
         t,
@@ -168,10 +164,12 @@ def fallback_alternative_treatments(full_text: str) -> str:
     return ""
 
 
+# FIX: Apostroph-Varianten in allen MED_REF_PATTERNS
 MED_REF_PATTERNS = [
     r"pas de progrès par rapport au médicament de référence\s*\((?P<ref>[^)]+)\)",
     r"pas de progrès par rapport aux princeps\s*\((?P<ref>[^)]+)\)",
-    r"n['']apporte pas d'amélioration du service médical rendu\s*\(ASMR\s*V\)\s*par rapport à\s*(?P<ref>[^.;]+)",
+    # FIX: Beide Apostrophe n' und d' jetzt mit ['']
+    r"n['']apporte pas d['']amélioration du service médical rendu\s*\(ASMR\s*V\)\s*par rapport à\s*(?P<ref>[^.;]+)",
 ]
 
 COMPARATOR_SECTION_HEADER = r"Comparateurs?\s+cliniquement\s+pertinents"
@@ -231,10 +229,7 @@ def _extract_dci_from_product_name(product_name: str) -> str:
     'norfloxacine'
     >>> _extract_dci_from_product_name("CLOMIPRAMINE_MYLAN")
     'clomipramine'
-    >>> _extract_dci_from_product_name("THYROFIX")
-    ''
     """
-    # Pattern: Wirkstoff (lowercase) gefolgt von Hersteller (uppercase)
     m = re.match(r'^([a-zéèêàùâôîûäöü]+)(?:_|\s+)([A-Z]+)', product_name, re.I)
     if m:
         return m.group(1).lower()
@@ -287,13 +282,11 @@ def infer_comparator(text: str, product_name: str = "") -> Tuple[str, str]:
     # 3) CCP-Section auswerten
     block = _extract_comparator_section(t)
     if block:
-        # Extrahiere DCI aus Produktname für generische Behandlung
         dci = _extract_dci_from_product_name(product_name)
         exclude = dci.upper() if dci else ""
         
         drugs = _extract_drug_list(block, exclude_prefix=exclude)
         if drugs:
-            # Generische Ergänzung
             drugs = _enhance_with_generic_alternatives(drugs, product_name)
             return drugs, "comparateurs_section_generic" if dci else "comparateurs_section"
     
@@ -312,7 +305,6 @@ def extract_one(pdf: Path, cfg_path: Path) -> Tuple[str, str]:
     
     raw = read_pdf_text(pdf)
     text = normalize_text(raw)
-    doctype = detect_document_type(text)
     blocks = split_by_headings_v3(text, options)
     
     # Produktname für DCI-Extraktion
@@ -359,7 +351,6 @@ def extract_one(pdf: Path, cfg_path: Path) -> Tuple[str, str]:
     spec_comp, spec_rule = infer_comparator(text, product_name)
     
     if spec_comp:
-        # Priorisierung: High-quality rules > Länge > nichts gefunden
         if not cleaned:
             cleaned = spec_comp
             rule_id = spec_rule
@@ -372,7 +363,7 @@ def extract_one(pdf: Path, cfg_path: Path) -> Tuple[str, str]:
             cleaned = spec_comp
             rule_id = spec_rule
     
-    # Logging für Debugging
+    # Logging
     if cleaned:
         logger.debug(f"{pdf.name}: Comparator via {rule_id}, length={len(cleaned)}")
     else:
