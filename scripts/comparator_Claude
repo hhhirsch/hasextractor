@@ -1,0 +1,437 @@
+# extract_comparator.py (V14 – OPTIMIZED)
+#
+# Verbesserungen gegenüber V13:
+# - Logging für Debugging
+# - Verbesserte Priorisierung der Heuristik
+# - Generische DCI-Extraktion statt Hardcode
+# - Konfigurierbare max_length aus YAML
+# - Docstring-Tests für kritische Funktionen
+
+import sys
+import csv
+import re
+import logging
+from pathlib import Path
+from typing import Tuple, Any
+
+from shared_utils import (
+    load_patterns,
+    normalize_text,
+    read_pdf_text,
+    split_by_headings_v3,
+    find_section_with_rule,
+    fallback_extract,
+    iter_pdfs,
+    make_doc_id,
+    first_match_rule,
+    start_signal,
+    progress_bar,
+    end_signal,
+    detect_document_type,
+)
+
+# Logging einrichten
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+PATTERN_VERSION = "hybrid_v2.1"
+MIN_COMPARATOR_CHARS = 50
+MAX_COMPARATOR_LENGTH = 1000  # Default, kann per YAML überschrieben werden
+
+# Priorisierte rule_ids (höhere Qualität)
+PRIORITY_RULES = ['comparateurs_section', 'no_progress_vs_ref', 'comparateurs_section_generic']
+
+COMPARATOR_STOP_MARKERS = [
+    r"^\s*(?:SERVICE\s+M[ÉE]DICAL\s+RENDU|SMR)\b",
+    r"^\s*AM[ÉE]LIORATION\s+DU\s+SERVICE\s+M[ÉE]DICAL\s+RENDU\b",
+    r"^\s*ASMR\b",
+    r"^\s*BESOIN\s+M[ÉE]DICAL\b",
+    r"^\s*ENVIRONNEMENT\s+M[ÉE]DICAL\b",
+    r"^\s*POPULATION\s+CIBLE\b",
+    r"^\s*SYNTH[ÈE]SE\b",
+    r"^\s*RECOMMANDATIONS?\b",
+]
+COMPARATOR_STOP_RE = re.compile("|".join(COMPARATOR_STOP_MARKERS), re.I | re.M)
+
+
+def _safe_section_and_rule(result: Any) -> Tuple[str, str]:
+    """
+    Normalisiert die Rückgabe von find_section_with_rule auf (sec, rule_id).
+    
+    >>> _safe_section_and_rule(None)
+    ('', '')
+    >>> _safe_section_and_rule(("text", "rule"))
+    ('text', 'rule')
+    >>> _safe_section_and_rule("just text")
+    ('just text', '')
+    """
+    if result is None:
+        return "", ""
+    if isinstance(result, tuple) and len(result) == 2:
+        sec, rule_id = result
+        return sec or "", rule_id or ""
+    if isinstance(result, str):
+        return result, ""
+    return str(result), ""
+
+
+def _is_numeric_heavy(line: str) -> bool:
+    """
+    Erkennt echte Tabellen-/Zahlenzeilen.
+    
+    >>> _is_numeric_heavy("160 180 200 250 300 Test")
+    True
+    >>> _is_numeric_heavy("Les comparateurs cliniquement pertinents sont:")
+    False
+    >>> _is_numeric_heavy("75% 80% 85% 90% x")
+    True
+    """
+    if not line:
+        return False
+    num_groups = len(re.findall(r"\b\d+(?:\.\d+)?\b", line))
+    text_without_nums = re.sub(r"\d+(?:\.\d+)?", "", line).strip()
+    text_length = len(text_without_nums)
+    if num_groups >= 4 and text_length < 20:
+        return True
+    if "%" in line and num_groups >= 3 and text_length < 30:
+        return True
+    return False
+
+
+def trim_comparator_block(text: str, max_len: int = MAX_COMPARATOR_LENGTH) -> str:
+    """Schneidet den Comparator-Block intelligent."""
+    if not text:
+        return ""
+    m = COMPARATOR_STOP_RE.search(text)
+    if m:
+        text = text[: m.start()]
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    kept = [ln for ln in lines if not _is_numeric_heavy(ln)]
+    t = "\n".join(kept).strip()
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    if len(t) <= max_len:
+        return t.strip()
+    shortened = t[:max_len]
+    last_period = shortened.rfind(".")
+    if last_period > max_len * 0.5:
+        t = shortened[: last_period + 1]
+    else:
+        t = shortened.rstrip() + "..."
+    return t.strip()
+
+
+def fallback_no_comparator(full_text: str) -> str:
+    """Spezialfall: 'il n'existe pas de comparateur cliniquement pertinent...'"""
+    if not full_text:
+        return ""
+    t = " ".join(full_text.split())
+    m = re.search(
+        r"il n['']existe pas de comparateur cliniquement pertinent[^.]*\.",
+        t,
+        re.I,
+    )
+    if m:
+        return m.group(0).strip()
+    return ""
+
+
+GENERIC_SENTENCE_PATTERNS = [
+    r"([^.]{0,200}g[ée]n[ée]rique[s]?\s+de\s+la\s+sp[ée]cialit[ée]\s+de\s+référence[^.]*\.)",
+    r"([^.]{0,200}sp[ée]cialit[ée]\s+de\s+référence[^.]*\.)",
+]
+
+
+def fallback_generic_comparator(full_text: str) -> str:
+    """Sucht bei Generika/Hybriden nach einem Satz mit 'spécialité de référence'."""
+    if not full_text:
+        return ""
+    t = " ".join(full_text.split())
+    for pat in GENERIC_SENTENCE_PATTERNS:
+        m = re.search(pat, t, re.I)
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
+def fallback_alternative_treatments(full_text: str) -> str:
+    """Sucht Sätze vom Typ 'il existe des alternatives ...'."""
+    if not full_text:
+        return ""
+    t = " ".join(full_text.split())
+    m = re.search(
+        r"il existe des alternatives?[^.]*\.",
+        t,
+        re.I,
+    )
+    if m:
+        return m.group(0).strip()
+    return ""
+
+
+MED_REF_PATTERNS = [
+    r"pas de progrès par rapport au médicament de référence\s*\((?P<ref>[^)]+)\)",
+    r"pas de progrès par rapport aux princeps\s*\((?P<ref>[^)]+)\)",
+    r"n['']apporte pas d'amélioration du service médical rendu\s*\(ASMR\s*V\)\s*par rapport à\s*(?P<ref>[^.;]+)",
+]
+
+COMPARATOR_SECTION_HEADER = r"Comparateurs?\s+cliniquement\s+pertinents"
+DRUG_NAME_PATTERN = r"\b([A-ZÉÈÎÙÂÔÄÖÜ][A-Z0-9\-]+)\s*\([^)]*\)"
+
+
+def _match_first(text: str, patterns: list[str]) -> str:
+    for pat in patterns:
+        m = re.search(pat, text, flags=re.IGNORECASE)
+        if not m:
+            continue
+        ref = m.groupdict().get("ref", "").strip()
+        if ref:
+            return ref
+    return ""
+
+
+def _extract_comparator_section(text: str) -> str:
+    """Sucht den 'Comparateurs cliniquement pertinents'-Block"""
+    m = re.search(
+        COMPARATOR_SECTION_HEADER
+        + r"(.*?)(SERVICE\s+M[ÉE]DICAL\s+RENDU|ASMR|5\.[23]|POPULATION\s+CIBLE|$)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    return m.group(1) if m else ""
+
+
+def _extract_drug_list(block: str, exclude_prefix: str = "") -> str:
+    """
+    Extrahiert Nennungen wie 'CIFLOX (ciprofloxacine)'.
+    
+    Args:
+        block: Text-Block zum Durchsuchen
+        exclude_prefix: Optional - Medikamentename der ausgeschlossen werden soll
+    """
+    if not block:
+        return ""
+    names = re.findall(DRUG_NAME_PATTERN, block)
+    
+    if exclude_prefix:
+        cleaned = [n for n in names if not n.startswith(exclude_prefix)]
+    else:
+        cleaned = names
+    
+    if not cleaned:
+        return ""
+    cleaned = list(dict.fromkeys(cleaned))
+    return "; ".join(cleaned)
+
+
+def _extract_dci_from_product_name(product_name: str) -> str:
+    """
+    Extrahiert die DCI (Wirkstoffname) aus dem Produktnamen.
+    
+    >>> _extract_dci_from_product_name("NORFLOXACINE_ZENTIVA")
+    'norfloxacine'
+    >>> _extract_dci_from_product_name("CLOMIPRAMINE_MYLAN")
+    'clomipramine'
+    >>> _extract_dci_from_product_name("THYROFIX")
+    ''
+    """
+    # Pattern: Wirkstoff (lowercase) gefolgt von Hersteller (uppercase)
+    m = re.match(r'^([a-zéèêàùâôîûäöü]+)(?:_|\s+)([A-Z]+)', product_name, re.I)
+    if m:
+        return m.group(1).lower()
+    return ""
+
+
+def _enhance_with_generic_alternatives(drugs: str, product_name: str) -> str:
+    """
+    Ergänzt bei Generika automatisch 'Autres spécialités à base de X'.
+    
+    >>> _enhance_with_generic_alternatives("CIFLOX; BACTRIM", "NORFLOXACINE_ZENTIVA")
+    'Autres spécialités à base de norfloxacine; CIFLOX; BACTRIM'
+    """
+    if not drugs:
+        return drugs
+    
+    dci = _extract_dci_from_product_name(product_name)
+    if dci:
+        prefix = f"Autres spécialités à base de {dci}"
+        if prefix.lower() not in drugs.lower():
+            return f"{prefix}; {drugs}"
+    
+    return drugs
+
+
+def infer_comparator(text: str, product_name: str = "") -> Tuple[str, str]:
+    """
+    Dokumentspezifische Comparator-Heuristik (Level 2).
+    
+    Args:
+        text: Volltext des PDFs
+        product_name: Name des Produkts (für DCI-Extraktion)
+    """
+    if not text:
+        return "", ""
+    
+    t = " ".join(text.split())
+    t_upper = t.upper()
+    t_low = t.lower()
+    
+    # 1) Conditions de prescription
+    if "conditions de prescription" in t_low:
+        return "", "conditions_prescription_no_comp"
+    
+    # 2) Generika / Referenzmedikament
+    ref = _match_first(t, MED_REF_PATTERNS)
+    if ref:
+        return ref, "no_progress_vs_ref"
+    
+    # 3) CCP-Section auswerten
+    block = _extract_comparator_section(t)
+    if block:
+        # Extrahiere DCI aus Produktname für generische Behandlung
+        dci = _extract_dci_from_product_name(product_name)
+        exclude = dci.upper() if dci else ""
+        
+        drugs = _extract_drug_list(block, exclude_prefix=exclude)
+        if drugs:
+            # Generische Ergänzung
+            drugs = _enhance_with_generic_alternatives(drugs, product_name)
+            return drugs, "comparateurs_section_generic" if dci else "comparateurs_section"
+    
+    return "", ""
+
+
+def extract_one(pdf: Path, cfg_path: Path) -> Tuple[str, str]:
+    cfg = load_patterns(cfg_path)
+    options = cfg.get("options", {})
+    target = cfg.get("targets", {}).get("Comparateur", {})
+    pats = target.get("patterns", [])
+    min_chars = int(target.get("min_chars", MIN_COMPARATOR_CHARS))
+    
+    # Konfigurierbare max_length aus YAML
+    max_len = int(target.get("max_length", MAX_COMPARATOR_LENGTH))
+    
+    raw = read_pdf_text(pdf)
+    text = normalize_text(raw)
+    doctype = detect_document_type(text)
+    blocks = split_by_headings_v3(text, options)
+    
+    # Produktname für DCI-Extraktion
+    product_name = pdf.stem
+    
+    # 1) Standard-Section-Logik
+    sec, rule_id = _safe_section_and_rule(
+        find_section_with_rule(blocks, pats, min_chars=min_chars)
+    )
+    
+    if not sec:
+        sec_fb = fallback_extract(text, pats, window=1500)
+        sec = sec_fb or ""
+        fr = first_match_rule(text, pats)
+        if fr and not rule_id:
+            rule_id = fr or "fallback_patterns"
+    
+    cleaned = trim_comparator_block(sec or "", max_len=max_len)
+    
+    if cleaned and len(cleaned) < MIN_COMPARATOR_CHARS:
+        cleaned = ""
+        rule_id = ""
+    
+    # Inhaltliche Fallbacks
+    if not cleaned:
+        no_ccp = fallback_no_comparator(text)
+        if no_ccp:
+            cleaned = no_ccp
+            rule_id = (rule_id or "") + ("|no_ccp_fallback" if rule_id else "no_ccp_fallback")
+    
+    if not cleaned:
+        gen = fallback_generic_comparator(text)
+        if gen:
+            cleaned = gen
+            rule_id = (rule_id or "") + ("|generic_ref" if rule_id else "generic_ref")
+    
+    if not cleaned:
+        alt = fallback_alternative_treatments(text)
+        if alt:
+            cleaned = alt
+            rule_id = (rule_id or "") + ("|alt_treatments" if rule_id else "alt_treatments")
+    
+    # 2) Spezialisierte Heuristik mit verbesserter Priorisierung
+    spec_comp, spec_rule = infer_comparator(text, product_name)
+    
+    if spec_comp:
+        # Priorisierung: High-quality rules > Länge > nichts gefunden
+        if not cleaned:
+            cleaned = spec_comp
+            rule_id = spec_rule
+        elif spec_rule in PRIORITY_RULES:
+            logger.debug(f"{pdf.name}: Using priority rule {spec_rule} over {rule_id}")
+            cleaned = spec_comp
+            rule_id = spec_rule
+        elif len(spec_comp) > len(cleaned):
+            logger.debug(f"{pdf.name}: Using longer spec_comp ({len(spec_comp)} vs {len(cleaned)})")
+            cleaned = spec_comp
+            rule_id = spec_rule
+    
+    # Logging für Debugging
+    if cleaned:
+        logger.debug(f"{pdf.name}: Comparator via {rule_id}, length={len(cleaned)}")
+    else:
+        logger.debug(f"{pdf.name}: No comparator found")
+    
+    return cleaned or "", (rule_id or "")
+
+
+def main() -> None:
+    if len(sys.argv) < 4:
+        print("Usage: python extract_comparator.py <pdf_or_dir> <out_csv> <patterns_yaml>")
+        sys.exit(1)
+    
+    src = Path(sys.argv[1])
+    out = Path(sys.argv[2])
+    yaml_cfg = Path(sys.argv[3])
+    
+    pdfs = list(iter_pdfs(src))
+    start_signal("extract_comparator", len(pdfs))
+    
+    rows = []
+    for idx, pdf in enumerate(pdfs, start=1):
+        try:
+            txt, rule_id = extract_one(pdf, yaml_cfg)
+            if txt is None:
+                txt = ""
+            if rule_id is None:
+                rule_id = ""
+            rows.append([
+                str(pdf),
+                "comparator",
+                txt,
+                make_doc_id(str(pdf)),
+                PATTERN_VERSION,
+                rule_id,
+            ])
+        except Exception as e:
+            logger.error(f"Error processing {pdf.name}: {type(e).__name__} - {str(e)}")
+            rows.append([
+                str(pdf),
+                "comparator",
+                "",
+                make_doc_id(str(pdf)),
+                PATTERN_VERSION,
+                f"__ERROR__:{type(e).__name__}",
+            ])
+        progress_bar(idx, len(pdfs), prefix="Comparator ")
+    
+    print()
+    end_signal("extract_comparator")
+    
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f, delimiter=";")
+        w.writerow(["file", "field", "text", "doc_id", "pattern_version", "rule_id"])
+        w.writerows(rows)
+    
+    logger.info(f"Processed {len(pdfs)} PDFs, saved to {out}")
+
+
+if __name__ == "__main__":
+    main()
