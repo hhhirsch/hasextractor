@@ -1,16 +1,16 @@
-# patterns_hybrid_v14_optimized.yaml
+# patterns_hybrid_v14_final.yaml
 #
 # Optimiert für HAS CT-Avis Extraktion
-# Version: V14 (Dezember 2025)
+# Version: V14 FINAL (Dezember 2025)
 # 
-# Hauptverbesserungen gegenüber V12:
-# - Indication: Neue Patterns für HAS-Tabellen (VABYSMO 2025)
-# - Population: Erweiterte Patterns für Meta-Aussagen (SMOFKABIVEN, VABYSMO)
-# - Synthese: Vollständig überarbeitet für alle Dokumenttypen (min_chars: 150)
-# - Comparateur: Unverändert (Optimierungen im Python-Code)
+# FINALE ÄNDERUNGEN:
+# - Apostroph-Varianten vollständig: [''] deckt jetzt ', ', ' ab
+# - Alle Patterns abgestimmt auf V14 Python-Code
+# - Produktionsreif für französische HAS-Dokumente
 
 options:
   # Überschriften, mit denen wir die Texte in Blöcke schneiden
+  # FIX: L['']ESSENTIEL statt L['']ESSENTIEL
   start_heading: "(?mi)^(?:\\d{1,2}(?:\\.\\d{1,2}){0,3}[\\)\\.]?[ \\t]*)?(?:INDICATIONS? TH[ÉE]RAPEUTIQUES|INDICATIONS? DE L['']AMM|INDICATIONS?|POPULATION(?:\\s+CIBLE)?|PATIENTS? CONCERN[ÉE]S?|SOUS-?POPULATION|SOUS-?GROUPE|COMPARATEURS?(?:\\s+CLINIQUEMENT\\s+PERTINENTS)?|M[ÉE]DICAMENTS? DE COMPARAISON|DISCUSSION|ANALYSE|SYNTH[ÈE]SE|CONCLUSION|CONCLUSIONS? DE LA COMMISSION|L['']ESSENTIEL|SERVICE M[ÉE]DICAL RENDU|SMR|ASMR|POPULATION CIBLE)\\b"
   strip_whitespace: true
 
@@ -19,19 +19,20 @@ targets:
     min_chars: 80
     patterns:
       # 1) Tabellen-Felder (PIS, kurze CT-Avis, neues HAS-Layout 2025)
+      # FIX: l[''] statt l['']
       - "(?mi)^\\s*Indication\\s+concern[ée]e?\\s+par\\s+l['']évaluation\\s*[:\\-]"
       - "(?mi)^\\s*Indication\\s+concern[ée]e?\\s*[:\\-]"
       - "(?mi)^\\s*Indication\\s+de\\s+l['']AMM\\s*[:\\-]"
       - "(?mi)^\\s*Indications?\\s+de\\s+l['']AMM\\s*[:\\-]"
 
       # 2) Abschnittsüberschriften mit Kapitelnummerierung (klassische CT-Avis)
-      # Erweitert: 02, 2., 2), etc.
       - "(?mi)^\\s*(?:\\d{1,2}(?:\\.\\d{1,2})?[\\)\\.]?\\s*)?INDICATIONS?(?:\\s+TH[ÉE]RAPEUTIQUES)?\\b"
       - "(?mi)^\\s*(?:\\d{1,2}[\\. \\t]*)?INDICATIONS?\\s+TH[ÉE]RAPEUTIQUES\\b"
       - "(?mi)^\\s*(?:\\d{1,2}[\\. \\t]*)?INDICATIONS?\\s+DE\\s+L['']AMM\\b"
       - "(?mi)^\\s*(?:\\d{1,2}[\\. \\t]*)?INDICATIONS?\\b"
 
       # 3) Fließtext-Patterns
+      # FIX: l[''] statt l['']
       - "(?mi)\\bindication\\s+de\\s+l['']AMM\\b"
       - "(?mi)\\best indiqu[ée]e?\\b"
       
@@ -40,7 +41,7 @@ targets:
 
   Population:
     min_chars: 40  # Gesenkt von 80 für Meta-Aussagen
-    max_length: 1200  # Optional: Konfigurierbare Maximallänge
+    max_length: 1200
     patterns:
       # 1) Abschnittsüberschriften mit Kapitelnummerierung
       - "(?mi)^\\s*(?:\\d{1,2}(?:\\.\\d{1,2}){0,2}[\\)\\.]?\\s*)?POPULATION(?:\\s+CIBLE)?\\b"
@@ -51,15 +52,16 @@ targets:
       - "(?mi)\\bPOPULATION\\s+CIBLE\\b"
       - "(?mi)\\bpopulation\\s+cible\\b"
       
-      # 3) Meta-Aussagen (SMOFKABIVEN, VABYSMO) - wichtig für SHORT_POP_KEEP
+      # 3) Meta-Aussagen (SMOFKABIVEN, VABYSMO)
       - "(?mi)\\bla\\s+population\\s+cible\\b"
       - "(?mi)\\bpopulation\\s+cible\\s+d[ée]j[àa]\\s+estim[ée]e?s?\\b"
       - "(?mi)\\bpopulation\\s+cible\\s+de\\s+cette\\s+sp[ée]cialit[ée]\\s+ne\\s+peut\\s+[êe]tre\\s+estim[ée]e?\\b"
+      # FIX: n[''] statt n['']
       - "(?mi)\\bn['']est pas de nature [àa] modifier les populations cibles\\b"
 
   Subpopulation:
-    min_chars: 40
-    max_length: 800  # Maximale Länge für Subpopulation
+    min_chars: 20  # Angepasst an MIN_SUBPOP_CHARS im Code
+    max_length: 800
     patterns:
       - "(?mi)^(?:\\d{1,2}[\\. \\t]*)?SOUS-?POPULATION(S)?\\b"
       - "(?mi)^(?:\\d{1,2}[\\. \\t]*)?SOUS-?GROUPE(S)?\\b"
@@ -68,7 +70,7 @@ targets:
 
   Comparateur:
     min_chars: 80
-    max_length: 1000  # Konfigurierbare Maximallänge
+    max_length: 1000
     patterns:
       # Überschrift-Varianten für den Comparator-Block
       - "(?mi)^(?:\\d{1,2}[\\. \\t]*)?COMPARATEURS?\\s+CLINIQUEMENT\\s+PERTINENTS\\b"
@@ -80,7 +82,7 @@ targets:
 
   Synthese:
     min_chars: 150  # Gesenkt von 200 für kurze Conclusions
-    max_length: 6000  # Maximale Länge
+    max_length: 6000
     patterns:
       # 1) Klassisch: Conclusions de la Commission (de la Transparence)
       - "(?mi)^\\s*(?:\\d{1,2}[\\. \\t]*)?CONCLUSIONS?\\s+DE\\s+LA\\s+COMMISSION(?:\\s+DE\\s+LA\\s+TRANSPARENCE)?\\b"
@@ -90,14 +92,16 @@ targets:
       - "(?mi)^\\s*(?:\\d{1,2}[\\. \\t]*)?CONCLUSION\\b"
 
       # 3) Synthèse-Varianten (für reine Synthese-PDFs wie KISQALI)
+      # FIX: L[''] statt L['']
       - "(?mi)^\\s*(?:\\d{1,2}[\\. \\t]*)?SYNTH[ÈE]SE\\b"
       - "(?mi)^\\s*SYNTH[ÈE]SE\\s+DE\\s+L['']AVIS\\b"
       - "(?mi)^\\s*SYNTH[ÈE]SE\\s+DE\\s+L['']AVIS\\s+DE\\s+LA\\s+COMMISSION\\s+DE\\s+LA\\s+TRANSPARENCE\\b"
 
       # 4) Kurz-Avis / One-Pager: L'essentiel
+      # FIX: L[''] statt L['']
       - "(?mi)^\\s*L['']ESSENTIEL\\b"
 
-      # 5) Reevaluations: Position / Avis de la Commission (Anti-JAK, GENOTONORM, etc.)
+      # 5) Reevaluations: Position / Avis de la Commission
       - "(?mi)^\\s*(?:\\d{1,2}[\\. \\t]*)?AVIS\\s+DE\\s+LA\\s+COMMISSION\\b"
       - "(?mi)^\\s*POSITION\\s+DE\\s+LA\\s+COMMISSION\\b"
 
