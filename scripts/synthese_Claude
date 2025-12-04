@@ -1,0 +1,270 @@
+# extract_synthese.py (V14 – OPTIMIZED)
+#
+# Verbesserungen:
+# - Erkennung reiner Synthèse-PDFs (KISQALI)
+# - Erweiterte YAML-Patterns für alle Varianten
+# - Senkung min_chars auf 150 (statt 200)
+# - Sonderfall für kurze aber gültige Conclusions (100-150 Zeichen)
+# - Verbesserte Stop-Marker
+# - Logging für Debugging
+
+import sys
+import csv
+import re
+import logging
+from pathlib import Path
+from typing import Tuple
+
+from shared_utils import (
+    load_patterns,
+    normalize_text,
+    read_pdf_text,
+    split_by_headings_v3,
+    find_section_with_rule,
+    fallback_extract,
+    iter_pdfs,
+    make_doc_id,
+    first_match_rule,
+    start_signal,
+    progress_bar,
+    end_signal,
+)
+
+# Logging einrichten
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+PATTERN_VERSION = "hybrid_v2.1"
+MIN_SYN_CHARS = 150  # Gesenkt von 200
+MAX_SYN_LENGTH = 6000
+
+# Stop-Marker: Hier endet typischerweise die Synthese
+SYN_STOP_MARKERS = [
+    r"^\s*POPULATION\s+CIBLE\b",
+    r"^\s*Population\s+cible\b",
+    r"^\s*RECOMMANDATIONS?\b",
+    r"^\s*Recommandations?\b",
+    r"^\s*INFORMATIONS?\s+ADMINISTRATIVES?\b",
+    r"^\s*Informations?\s+administratives?\b",
+    r"^\s*ANNEXE[S]?\b",
+    r"^\s*Annexe[s]?\b",
+    r"^\s*RAPPEL\s+DU\s+SERVICE\s+M[ÉE]DICAL\s+RENDU\b",
+]
+
+SYN_STOP_RE = re.compile("|".join(SYN_STOP_MARKERS), re.I | re.M)
+
+
+def is_pure_synthese_doc(text: str) -> bool:
+    """
+    Erkenne reine Synthèse-PDFs (z.B. kisqali_..._synthese_ct18350.pdf),
+    bei denen der ganze Inhalt bereits die Synthese ist.
+    
+    >>> is_pure_synthese_doc("SYNTHÈSE DE L'AVIS DE LA COMMISSION... text...")
+    True
+    >>> is_pure_synthese_doc("CONCLUSIONS DE LA COMMISSION... normale CT-Avis...")
+    False
+    """
+    if not text:
+        return False
+    
+    t = " ".join(text.split())
+    head = t[:600].lower()
+    
+    # Prüfe auf typische Header reiner Synthese-PDFs
+    synthese_markers = [
+        "synthèse de l'avis de la commission de la transparence",
+        "synthese de l'avis de la commission de la transparence",
+        "synthèse de l'avis",
+        "synthese de l'avis",
+    ]
+    
+    for marker in synthese_markers:
+        if marker in head:
+            # Zusätzliche Prüfung: Keine typischen CT-Sections danach
+            if not re.search(r"indication(?:s)?\s+th[ée]rapeutiques?", head, re.I):
+                return True
+    
+    return False
+
+
+def trim_synthese_block(text: str, max_len: int = MAX_SYN_LENGTH) -> str:
+    """
+    Schneidet den Synthese-Block intelligent:
+    - Stoppt an typischen Überschriften nach der Synthese
+    - Reduziert überlange Texte auf max_len Zeichen (an Satzende)
+    - Entfernt übermäßiges Whitespace
+    """
+    if not text:
+        return ""
+    
+    # 1) An Stop-Marker abschneiden
+    m = SYN_STOP_RE.search(text)
+    if m:
+        text = text[:m.start()]
+    
+    t = text.strip()
+    
+    # 2) Whitespace normalisieren
+    t = re.sub(r'\n{3,}', '\n\n', t)
+    
+    # 3) Längenlimit
+    if len(t) <= max_len:
+        return t
+    
+    shortened = t[:max_len]
+    last_period = shortened.rfind(".")
+    
+    # Versuche an Satzende zu schneiden
+    if last_period > max_len * 0.5:
+        t = shortened[:last_period + 1]
+    else:
+        t = shortened.rstrip() + "..."
+    
+    return t.strip()
+
+
+def _safe_section_and_rule(result) -> Tuple[str, str]:
+    """
+    Normalisiert die Rückgabe von find_section_with_rule.
+    
+    >>> _safe_section_and_rule(None)
+    ('', '')
+    >>> _safe_section_and_rule(("text", "rule"))
+    ('text', 'rule')
+    """
+    if result is None:
+        return "", ""
+    if isinstance(result, tuple) and len(result) == 2:
+        sec, rule_id = result
+        return sec or "", rule_id or ""
+    if isinstance(result, str):
+        return result, ""
+    return str(result), ""
+
+
+def extract_one(pdf: Path, cfg_path: Path) -> Tuple[str, str]:
+    """
+    Extrahiert Synthese/Conclusions aus einem PDF.
+    
+    Returns:
+        (synthese_text, rule_id)
+    """
+    cfg = load_patterns(cfg_path)
+    options = cfg.get("options", {})
+    target = cfg.get("targets", {}).get("Synthese", {})
+    pats = target.get("patterns", [])
+    min_chars = int(target.get("min_chars", MIN_SYN_CHARS))
+    
+    raw = read_pdf_text(pdf)
+    text = normalize_text(raw)
+    
+    # 0) Sonderfall: Reine Synthèse-PDFs (KISQALI, etc.)
+    if is_pure_synthese_doc(text):
+        full = text.strip()
+        cleaned = trim_synthese_block(full)
+        
+        # Für reine Synthese-PDFs: sehr liberale min_chars
+        if len(cleaned) < MIN_SYN_CHARS:
+            if len(cleaned) >= 80:
+                logger.debug(f"{pdf.name}: Pure synthese doc (short, {len(cleaned)} chars)")
+                return cleaned, "pure_synthese_doc|short"
+            logger.debug(f"{pdf.name}: Pure synthese doc too short ({len(cleaned)} chars)")
+            return "", "pure_synthese_too_short"
+        
+        logger.debug(f"{pdf.name}: Pure synthese doc, length={len(cleaned)}")
+        return cleaned, "pure_synthese_doc"
+    
+    # Standard-Extraktion für reguläre CT-Avis
+    blocks = split_by_headings_v3(text, options)
+    
+    # 1) Section-basiert über YAML-Patterns
+    sec, rule_id = _safe_section_and_rule(
+        find_section_with_rule(blocks, pats, min_chars=min_chars)
+    )
+    
+    # 2) Fallback: Fließtext-Suche
+    if not sec:
+        sec_fb = fallback_extract(text, pats, window=2500)
+        sec = sec_fb or ""
+        fr = first_match_rule(text, pats)
+        if fr and not rule_id:
+            rule_id = fr or "fallback_patterns"
+    
+    cleaned = trim_synthese_block(sec or "")
+    
+    # 3) Validierung: Zu kurze Schnipsel verwerfen
+    if cleaned and len(cleaned) < MIN_SYN_CHARS:
+        # Sonderfall: Kurze aber klar markierte Conclusions (NORFLOXACINE, FLUARIXTETRA, PANZYGA)
+        # Wenn "CONCLUSIONS" im Text und mindestens 100 Zeichen → akzeptieren
+        if re.search(r"CONCLUSIONS?", cleaned, flags=re.I) and len(cleaned) >= 100:
+            logger.debug(f"{pdf.name}: Short conclusion accepted ({len(cleaned)} chars)")
+            return cleaned, (rule_id or "") + "|short_conclusion"
+        
+        # Zu kurz und nicht als Conclusion markiert
+        logger.debug(f"{pdf.name}: Synthese too short ({len(cleaned)} chars), discarding")
+        cleaned = ""
+        rule_id = ""
+    
+    # Logging
+    if cleaned:
+        logger.debug(f"{pdf.name}: Synthese via {rule_id}, length={len(cleaned)}")
+    else:
+        logger.debug(f"{pdf.name}: No synthese found")
+    
+    return cleaned or "", (rule_id or "")
+
+
+def main() -> None:
+    if len(sys.argv) < 4:
+        print("Usage: python extract_synthese.py <pdf_or_dir> <out_csv> <patterns_yaml>")
+        sys.exit(1)
+    
+    src = Path(sys.argv[1])
+    out = Path(sys.argv[2])
+    yaml_cfg = Path(sys.argv[3])
+    
+    pdfs = list(iter_pdfs(src))
+    start_signal("extract_synthese", len(pdfs))
+    
+    rows = []
+    for idx, pdf in enumerate(pdfs, start=1):
+        try:
+            txt, rule_id = extract_one(pdf, yaml_cfg)
+            if txt is None:
+                txt = ""
+            if rule_id is None:
+                rule_id = ""
+            rows.append([
+                str(pdf),
+                "synthese",
+                txt,
+                make_doc_id(str(pdf)),
+                PATTERN_VERSION,
+                rule_id,
+            ])
+        except Exception as e:
+            logger.error(f"Error processing {pdf.name}: {type(e).__name__} - {str(e)}")
+            rows.append([
+                str(pdf),
+                "synthese",
+                "",
+                make_doc_id(str(pdf)),
+                PATTERN_VERSION,
+                f"__ERROR__:{type(e).__name__}",
+            ])
+        progress_bar(idx, len(pdfs), prefix="Synthese ")
+    
+    print()
+    end_signal("extract_synthese")
+    
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f, delimiter=";")
+        w.writerow(["file", "field", "text", "doc_id", "pattern_version", "rule_id"])
+        w.writerows(rows)
+    
+    logger.info(f"Processed {len(pdfs)} PDFs, saved to {out}")
+
+
+if __name__ == "__main__":
+    main()
