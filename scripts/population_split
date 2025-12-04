@@ -1,4 +1,4 @@
-# extract_population_split.py (V14 – OPTIMIZED)
+# extract_population_split.py (V14 – FINAL, KOMPATIBEL)
 #
 # Verbesserungen:
 # - Erweiterte SHORT_POP_KEEP für Meta-Aussagen (SMOFKABIVEN, VABYSMO)
@@ -6,7 +6,7 @@
 # - Verbesserte Priorisierungs-Logik für Kandidaten
 # - Konsistente MIN_POP_CHARS = 40
 # - Subpopulation-Längen-Validierung
-# - Logging für Debugging
+# - FIXES: Regex-Stop-Markers, alte CLI-Signatur, keine Duplikate
 
 import sys
 import csv
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 PATTERN_VERSION = "hybrid_v2.1"
 MIN_POP_CHARS = 40  # Konsistent auf 40 gesetzt
 MIN_SUBPOP_CHARS = 20
-MAX_SUBPOP_LENGTH = 800  # Maximum für Subpopulation
+MAX_SUBPOP_LENGTH = 800
 
 # Erweiterte Keep-Patterns für kurze aber wichtige Population-Aussagen
 SHORT_POP_KEEP = [
@@ -56,7 +56,7 @@ ESS_SUMMARY_PATTERNS = [
     r"avis\s+favorable[^.]{10,300}patients[^.]{10,300}\.",
 ]
 
-# Subpopulation Stop-Marker
+# Subpopulation Stop-Marker (als Regex)
 SUBPOP_STOP_MARKERS = [
     r"(?i)\bcomparateurs?\b",
     r"(?i)\bsynthèse\b",
@@ -79,14 +79,7 @@ def _safe_section_and_rule(result) -> Tuple[str, str]:
 
 
 def is_short_but_valid_population(text: str) -> bool:
-    """
-    Prüft ob ein kurzer Text trotzdem als gültige Population zählt.
-    
-    >>> is_short_but_valid_population("La population cible ne peut être estimée.")
-    True
-    >>> is_short_but_valid_population("Test")
-    False
-    """
+    """Prüft ob ein kurzer Text trotzdem als gültige Population zählt."""
     if not text or len(text) < 20:
         return False
     
@@ -99,9 +92,7 @@ def is_short_but_valid_population(text: str) -> bool:
 
 
 def trim_population_block(text: str) -> str:
-    """
-    Entfernt Epidemiologie-Sections und kürzt den Population-Block sinnvoll.
-    """
+    """Entfernt Epidemiologie-Sections und kürzt den Population-Block sinnvoll."""
     if not text:
         return ""
     
@@ -121,14 +112,10 @@ def trim_population_block(text: str) -> str:
 
 
 def fallback_population_from_indication(ind_text: str) -> str:
-    """
-    Fallback: Extrahiert Population-Infos aus Indication.
-    Sucht nach Altersangaben, Krankheitsbildern, etc.
-    """
+    """Fallback: Extrahiert Population-Infos aus Indication."""
     if not ind_text or len(ind_text) < 50:
         return ""
     
-    # Suche nach relevanten Population-Snippets
     patterns = [
         r"chez les (?:adultes|patients|enfants)[^.]{10,200}\.",
         r"(?:adultes?|patients?|enfants?)[^.]{10,150}âgés? de[^.]{10,100}\.",
@@ -147,34 +134,25 @@ def fallback_population_from_summary(full_text: str) -> str:
     """
     Sucht in 'L'essentiel' / 'Synthèse de l'avis' nach einem
     Satz mit 'patients ...' als Population-Ersatz.
-    
-    Typisches Ziel: GIVLAARI, VABYSMO, CPD/Ville-Avis.
-    
-    >>> txt = "L'essentiel Avis favorable ... chez les patients âgés de 18 ans."
-    >>> result = fallback_population_from_summary(txt)
-    >>> "patients" in result
-    True
     """
     if not full_text:
         return ""
     
-    # Zeilen glätten
     t = " ".join(full_text.split())
     low = t.lower()
     
-    # 1) Fokusbereich um 'L'essentiel' einschränken
+    # FIX: Duplikate entfernt
     window = ""
-    for anchor in ["l'essentiel", "l'essentiel", "synthèse de l'avis", "synthèse de l'avis"]:
+    for anchor in ["l'essentiel", "synthèse de l'avis"]:
         idx = low.find(anchor)
         if idx != -1:
-            # 800 Zeichen ab Anker
             window = t[idx : idx + 800]
             break
     
     if not window:
         window = t
     
-    # 2) Satz mit 'avis favorable ... patients ...' suchen
+    # Satz mit 'avis favorable ... patients ...'
     for pat in ESS_SUMMARY_PATTERNS:
         m = re.search(pat, window, flags=re.I)
         if m:
@@ -182,7 +160,7 @@ def fallback_population_from_summary(full_text: str) -> str:
             if len(result) >= MIN_POP_CHARS:
                 return result
     
-    # 3) Generischer Satz: 'chez les patients ...' im Fenster
+    # Generischer Satz: 'chez les patients ...'
     m = re.search(r"chez les patients[^.]{10,300}\.", window, flags=re.I)
     if m:
         result = m.group(0).strip()
@@ -193,10 +171,7 @@ def fallback_population_from_summary(full_text: str) -> str:
 
 
 def infer_sub_from_population(pop_text: str) -> str:
-    """
-    Heuristik: Versucht Subpopulation aus Population zu extrahieren.
-    Sucht nach Keywords wie 'sous-population', 'sous-groupe', etc.
-    """
+    """Heuristik: Versucht Subpopulation aus Population zu extrahieren."""
     if not pop_text or len(pop_text) < MIN_SUBPOP_CHARS:
         return ""
     
@@ -211,7 +186,6 @@ def infer_sub_from_population(pop_text: str) -> str:
     
     for marker in sub_markers:
         if re.search(marker, pop_text, flags=re.I):
-            # Nimm 300 Zeichen um den Marker herum
             match = re.search(marker, pop_text, flags=re.I)
             if match:
                 start = max(0, match.start() - 100)
@@ -228,19 +202,17 @@ def validate_and_trim_subpopulation(sub: str, pop: str) -> str:
     """
     Validiert und trimmt Subpopulation-Text.
     
-    Regeln:
-    - Max 800 Zeichen (oder 1.5x Population)
-    - Keine falschen Section-Marker
-    - Stoppt an Section-Grenzen
+    FIX: Stop-Marker jetzt mit Regex statt .find()
     """
     if not sub:
         return ""
     
-    # 1) Stoppe an falschen Sections
+    # 1) Stoppe an falschen Sections (FIX: mit Regex)
     for marker in SUBPOP_STOP_MARKERS:
-        idx = sub.lower().find(marker)
-        if idx != -1 and idx > 20:  # Nicht wenn Marker ganz am Anfang
-            sub = sub[:idx].strip()
+        m = re.search(marker, sub, flags=re.I)
+        if m and m.start() > 20:  # Nicht wenn Marker ganz am Anfang
+            sub = sub[:m.start()].strip()
+            break
     
     # 2) Längen-Limit
     max_len = min(MAX_SUBPOP_LENGTH, int(len(pop) * 1.5)) if pop else MAX_SUBPOP_LENGTH
@@ -248,7 +220,6 @@ def validate_and_trim_subpopulation(sub: str, pop: str) -> str:
     if len(sub) > max_len:
         logger.debug(f"Subpopulation too long ({len(sub)}), trimming to {max_len}")
         sub = sub[:max_len].strip()
-        # Versuche an Satzende zu trimmen
         last_period = sub.rfind('.')
         if last_period > max_len * 0.6:
             sub = sub[:last_period + 1]
@@ -261,23 +232,14 @@ def validate_and_trim_subpopulation(sub: str, pop: str) -> str:
     # 4) Prüfe auf falsche Section-Marker im Text
     for marker in SUBPOP_STOP_MARKERS:
         if re.search(marker, sub, flags=re.I):
-            logger.warning(f"Subpopulation contains stop marker '{marker}', discarding")
+            logger.warning(f"Subpopulation contains stop marker, discarding")
             return ""
     
     return sub
 
 
 def select_best_population_candidate(candidates: list) -> Tuple[str, str]:
-    """
-    Wählt den besten Population-Kandidaten aus mehreren Optionen.
-    
-    Priorisierung:
-    1. Summary (L'essentiel) - oft am präzisesten
-    2. Section - Standard-Extraktion
-    3. Indication - Fallback
-    
-    Bei ähnlicher Länge wird Summary bevorzugt.
-    """
+    """Wählt den besten Population-Kandidaten aus mehreren Optionen."""
     if not candidates:
         return "", ""
     
@@ -293,9 +255,8 @@ def select_best_population_candidate(candidates: list) -> Tuple[str, str]:
     # Sortiere: Summary > Section > Indication, dann nach Länge
     def sort_key(item):
         text, length, source, rule = item
-        # Priority score: summary=3, section=2, indication=1
         priority = {'summary': 3, 'section': 2, 'indication': 1}.get(source, 0)
-        return (-priority, -length)  # Höchste Priorität und längster Text zuerst
+        return (-priority, -length)
     
     valid.sort(key=sort_key)
     
@@ -305,17 +266,16 @@ def select_best_population_candidate(candidates: list) -> Tuple[str, str]:
     return best_text, best_rule
 
 
-def extract_one(pdf: Path, cfg_path: Path, ind_map: Dict[str, str]) -> Tuple[str, str, str]:
+def extract_one(pdf: Path, cfg_path: Path, ind_map: Dict[str, str]) -> Tuple[str, str, str, str]:
     """
     Extrahiert Population und Subpopulation aus einem PDF.
     
     Returns:
-        (population, subpopulation, rule_id)
+        (population, subpopulation, pop_rule_id, sub_rule_id)
     """
     cfg = load_patterns(cfg_path)
     options = cfg.get("options", {})
     
-    # Population-Config
     pop_target = cfg.get("targets", {}).get("Population", {})
     pop_pats = pop_target.get("patterns", [])
     pop_min_chars = int(pop_target.get("min_chars", MIN_POP_CHARS))
@@ -325,7 +285,7 @@ def extract_one(pdf: Path, cfg_path: Path, ind_map: Dict[str, str]) -> Tuple[str
     blocks = split_by_headings_v3(text, options)
     doc_id = make_doc_id(str(pdf))
     
-    # 1) Standard Population-Section-Extraktion
+    # 1) Standard Population-Section
     pop, pop_rule = _safe_section_and_rule(
         find_section_with_rule(blocks, pop_pats, min_chars=pop_min_chars)
     )
@@ -354,13 +314,14 @@ def extract_one(pdf: Path, cfg_path: Path, ind_map: Dict[str, str]) -> Tuple[str
     
     pop, pop_rule = select_best_population_candidate(candidates)
     
-    # 5) Subpopulation-Extraktion (aus Population)
+    # 5) Subpopulation-Extraktion
     sub = infer_sub_from_population(pop) if pop else ""
+    sub_rule = ""
     
-    # Subpopulation validieren und trimmen
     if sub:
         sub = validate_and_trim_subpopulation(sub, pop)
         if sub:
+            sub_rule = "inferred"
             logger.debug(f"{pdf.name}: Subpopulation extracted (length={len(sub)})")
     
     # Logging
@@ -369,26 +330,25 @@ def extract_one(pdf: Path, cfg_path: Path, ind_map: Dict[str, str]) -> Tuple[str
     else:
         logger.debug(f"{pdf.name}: No population found")
     
-    return pop or "", sub or "", pop_rule or ""
+    return pop or "", sub or "", pop_rule or "", sub_rule or ""
 
 
 def main() -> None:
+    # FIX: Alte CLI-Signatur wiederhergestellt
     if len(sys.argv) < 5:
-        print("Usage: python extract_population_split.py <pdf_or_dir> <pop_csv> <subpop_csv> <patterns_yaml>")
+        print("Usage: python extract_population_split.py <pdf_or_dir> <out_csv> <patterns_yaml> <indication_csv>")
         sys.exit(1)
     
     src = Path(sys.argv[1])
-    out_pop = Path(sys.argv[2])
-    out_sub = Path(sys.argv[3])
-    yaml_cfg = Path(sys.argv[4])
+    out = Path(sys.argv[2])
+    yaml_cfg = Path(sys.argv[3])
+    ind_csv_path = Path(sys.argv[4])
     
-    # Lade Indication-Map (falls vorhanden)
+    # Lade Indication-Map
     ind_map = {}
-    ind_csv = out_pop.parent / "indication.csv"
-    if ind_csv.exists():
-        import csv as csv_mod
-        with ind_csv.open("r", encoding="utf-8") as f:
-            reader = csv_mod.DictReader(f, delimiter=";")
+    if ind_csv_path.exists():
+        with ind_csv_path.open("r", encoding="utf-8") as f:
+            reader = csv.DictReader(f, delimiter=";")
             for row in reader:
                 ind_map[row.get("doc_id", "")] = row.get("text", "")
         logger.info(f"Loaded {len(ind_map)} indications for fallback")
@@ -396,55 +356,37 @@ def main() -> None:
     pdfs = list(iter_pdfs(src))
     start_signal("extract_population_split", len(pdfs))
     
-    pop_rows = []
-    sub_rows = []
+    rows = []
     
     for idx, pdf in enumerate(pdfs, start=1):
         try:
-            pop_txt, sub_txt, rule_id = extract_one(pdf, yaml_cfg, ind_map)
+            pop_txt, sub_txt, pop_rule, sub_rule = extract_one(pdf, yaml_cfg, ind_map)
             
             doc_id = make_doc_id(str(pdf))
             
-            # Population
-            pop_rows.append([
+            # ALTES FORMAT: Beide in einer Zeile
+            rows.append([
                 str(pdf),
-                "population",
+                doc_id,
+                PATTERN_VERSION,
                 pop_txt or "",
-                doc_id,
-                PATTERN_VERSION,
-                rule_id or "",
-            ])
-            
-            # Subpopulation
-            sub_rows.append([
-                str(pdf),
-                "subpopulation",
                 sub_txt or "",
-                doc_id,
-                PATTERN_VERSION,
-                "inferred" if sub_txt else "",
+                pop_rule or "",
+                sub_rule or "",
             ])
             
         except Exception as e:
             logger.error(f"Error processing {pdf.name}: {type(e).__name__} - {str(e)}")
             doc_id = make_doc_id(str(pdf))
             
-            pop_rows.append([
+            rows.append([
                 str(pdf),
-                "population",
-                "",
                 doc_id,
                 PATTERN_VERSION,
-                f"__ERROR__:{type(e).__name__}",
-            ])
-            
-            sub_rows.append([
-                str(pdf),
-                "subpopulation",
                 "",
-                doc_id,
-                PATTERN_VERSION,
+                "",
                 f"__ERROR__:{type(e).__name__}",
+                "",
             ])
         
         progress_bar(idx, len(pdfs), prefix="Population ")
@@ -452,22 +394,14 @@ def main() -> None:
     print()
     end_signal("extract_population_split")
     
-    # Schreibe Population CSV
-    out_pop.parent.mkdir(parents=True, exist_ok=True)
-    with out_pop.open("w", newline="", encoding="utf-8") as f:
+    # Schreibe eine CSV im alten Format
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f, delimiter=";")
-        w.writerow(["file", "field", "text", "doc_id", "pattern_version", "rule_id"])
-        w.writerows(pop_rows)
+        w.writerow(["file", "doc_id", "pattern_version", "Population", "Subpopulation", "rule_id_population", "rule_id_subpopulation"])
+        w.writerows(rows)
     
-    # Schreibe Subpopulation CSV
-    with out_sub.open("w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f, delimiter=";")
-        w.writerow(["file", "field", "text", "doc_id", "pattern_version", "rule_id"])
-        w.writerows(sub_rows)
-    
-    logger.info(f"Processed {len(pdfs)} PDFs")
-    logger.info(f"Population saved to {out_pop}")
-    logger.info(f"Subpopulation saved to {out_sub}")
+    logger.info(f"Processed {len(pdfs)} PDFs, saved to {out}")
 
 
 if __name__ == "__main__":
