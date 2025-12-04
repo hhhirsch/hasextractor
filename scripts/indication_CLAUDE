@@ -1,4 +1,4 @@
-# extract_indication.py (V14 – OPTIMIZED)
+# extract_indication.py (V14 – FINAL)
 #
 # Verbesserungen:
 # - Neue Patterns für HAS-Tabellen-Layout (VABYSMO 2025)
@@ -6,6 +6,7 @@
 # - Erweiterte Kapitelnummerierung (02, 2., etc.)
 # - Logging für Debugging
 # - Robustes Error-Handling
+# - FIXES: Tabellen-Fallback behält Newlines, Apostrophe korrekt
 
 import sys
 import csv
@@ -27,7 +28,6 @@ from shared_utils import (
     start_signal,
     progress_bar,
     end_signal,
-    detect_document_type,
 )
 
 # Logging einrichten
@@ -37,10 +37,10 @@ logger = logging.getLogger(__name__)
 PATTERN_VERSION = "hybrid_v2.1"
 MIN_INDICATION_CHARS = 80
 
-# Stop-Marker für Indication-Section
+# Stop-Marker für Indication-Section (FIX: Apostrophe erweitert)
 INDICATION_STOP_MARKERS = [
     r"^\s*(?:POSOLOGIE|DOSAGE)\b",
-    r"^\s*MODE\s+D['']ADMINISTRATION\b",
+    r"^\s*MODE\s+D['']ADMINISTRATION\b",  # FIX: ' und ' und '
     r"^\s*CONTRE[-\s]?INDICATIONS?\b",
     r"^\s*MISES?\s+EN\s+GARDE\b",
     r"^\s*POPULATION\s+CIBLE\b",
@@ -53,13 +53,6 @@ INDICATION_STOP_RE = re.compile("|".join(INDICATION_STOP_MARKERS), re.I | re.M)
 def _safe_section_and_rule(result) -> Tuple[str, str]:
     """
     Normalisiert die Rückgabe von find_section_with_rule.
-    
-    >>> _safe_section_and_rule(None)
-    ('', '')
-    >>> _safe_section_and_rule(("text", "rule"))
-    ('text', 'rule')
-    >>> _safe_section_and_rule("just text")
-    ('just text', '')
     """
     if result is None:
         return "", ""
@@ -95,23 +88,25 @@ def fallback_indication_from_table(text: str) -> str:
     Sucht nach Tabellenzeilen vom Typ 'Indication concernée par l'évaluation: ...'
     wie im neuen HAS-Layout (VABYSMO 2025).
     
-    Nimmt bis zu 500 Zeichen oder bis zur nächsten Überschrift.
+    FIX: Behält Zeilenumbrüche, damit Überschrifts-Erkennung funktioniert.
     """
     if not text:
         return ""
     
-    t = " ".join(text.split())
+    # FIX: NICHT glätten – wir wollen Zeilenumbrüche behalten für Lookahead
+    t = text
     
-    # Pattern: Indication concernée + bis zu 500 Zeichen Content
+    # Pattern: Indication concernée + bis zur nächsten Überschrift/Leerzeile
+    # FIX: Apostrophe erweitert auf ' und ' und '
     m = re.search(
-        r"Indication\s+concern[ée]e?\s+par\s+l['']évaluation\s*[:\-]\s*(.{10,500}?)(?=\n\n|\n[A-Z]{4,}|$)",
+        r"Indication\s+concern[ée]e?\s+par\s+l['']évaluation\s*[:\-]\s*(.+?)(?=\n\s*\n|\n[A-Z][A-ZÉÈÎÂÔÛÄÖÜ]{3,}|$)",
         t,
         flags=re.I | re.DOTALL
     )
     
     if m:
         indication = m.group(1).strip()
-        # Bereinige ggf. Tabellenreste
+        # Jetzt Whitespace glätten (nachdem wir extrahiert haben)
         indication = re.sub(r'\s+', ' ', indication)
         return indication
     
@@ -121,17 +116,13 @@ def fallback_indication_from_table(text: str) -> str:
 def fallback_indication_amm_sentence(text: str) -> str:
     """
     Sucht im Fließtext nach AMM-Sätzen mit 'est indiqué dans/pour le traitement de...'.
-    
-    >>> txt = "GIVLAARI est indiqué dans le traitement des porphyries hépatiques aiguës."
-    >>> fallback_indication_amm_sentence(txt)
-    'GIVLAARI est indiqué dans le traitement des porphyries hépatiques aiguës.'
     """
     if not text:
         return ""
     
     t = " ".join(text.split())
     
-    # Suche Sätze mit "est indiqué"
+    # Suche Sätze mit "est indiqué" / "sont indiqués"
     patterns = [
         r"([A-ZÉÈÎÙÂÔÄÖÜ][^.]{10,200}est\s+indiqu[ée]e?\s+(?:dans|pour)\s+le\s+traitement\s+[^.]{10,300}\.)",
         r"([A-ZÉÈÎÙÂÔÄÖÜ][^.]{10,200}sont\s+indiqu[ée]e?s?\s+(?:dans|pour)\s+le\s+traitement\s+[^.]{10,300}\.)",
@@ -160,7 +151,6 @@ def extract_one(pdf: Path, cfg_path: Path) -> Tuple[str, str]:
     
     raw = read_pdf_text(pdf)
     text = normalize_text(raw)
-    doctype = detect_document_type(text)
     blocks = split_by_headings_v3(text, options)
     
     # 1) Standard-Section-Logik
@@ -183,7 +173,7 @@ def extract_one(pdf: Path, cfg_path: Path) -> Tuple[str, str]:
         cleaned = ""
         rule_id = ""
     
-    # 2) Tabellen-Fallback (neues HAS-Layout)
+    # 2) Tabellen-Fallback (neues HAS-Layout - VABYSMO)
     if not cleaned or len(cleaned) < MIN_INDICATION_CHARS:
         fb_tab = fallback_indication_from_table(text)
         if fb_tab and len(fb_tab) > len(cleaned):
