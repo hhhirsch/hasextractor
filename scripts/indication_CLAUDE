@@ -1,0 +1,264 @@
+# extract_indication.py (V14 – OPTIMIZED)
+#
+# Verbesserungen:
+# - Neue Patterns für HAS-Tabellen-Layout (VABYSMO 2025)
+# - Fallback für "Indication concernée par l'évaluation"
+# - Erweiterte Kapitelnummerierung (02, 2., etc.)
+# - Logging für Debugging
+# - Robustes Error-Handling
+
+import sys
+import csv
+import re
+import logging
+from pathlib import Path
+from typing import Tuple
+
+from shared_utils import (
+    load_patterns,
+    normalize_text,
+    read_pdf_text,
+    split_by_headings_v3,
+    find_section_with_rule,
+    fallback_extract,
+    iter_pdfs,
+    make_doc_id,
+    first_match_rule,
+    start_signal,
+    progress_bar,
+    end_signal,
+    detect_document_type,
+)
+
+# Logging einrichten
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+PATTERN_VERSION = "hybrid_v2.1"
+MIN_INDICATION_CHARS = 80
+
+# Stop-Marker für Indication-Section
+INDICATION_STOP_MARKERS = [
+    r"^\s*(?:POSOLOGIE|DOSAGE)\b",
+    r"^\s*MODE\s+D['']ADMINISTRATION\b",
+    r"^\s*CONTRE[-\s]?INDICATIONS?\b",
+    r"^\s*MISES?\s+EN\s+GARDE\b",
+    r"^\s*POPULATION\s+CIBLE\b",
+    r"^\s*COMPARATEURS?\b",
+    r"^\s*(?:03|3\.)\s+",  # Nächstes Kapitel
+]
+INDICATION_STOP_RE = re.compile("|".join(INDICATION_STOP_MARKERS), re.I | re.M)
+
+
+def _safe_section_and_rule(result) -> Tuple[str, str]:
+    """
+    Normalisiert die Rückgabe von find_section_with_rule.
+    
+    >>> _safe_section_and_rule(None)
+    ('', '')
+    >>> _safe_section_and_rule(("text", "rule"))
+    ('text', 'rule')
+    >>> _safe_section_and_rule("just text")
+    ('just text', '')
+    """
+    if result is None:
+        return "", ""
+    if isinstance(result, tuple) and len(result) == 2:
+        sec, rule_id = result
+        return sec or "", rule_id or ""
+    if isinstance(result, str):
+        return result, ""
+    return str(result), ""
+
+
+def trim_indication_block(text: str) -> str:
+    """
+    Schneidet den Indication-Block an typischen Grenzen ab.
+    Entfernt auch Posologie/Dosage-Informationen.
+    """
+    if not text:
+        return ""
+    
+    # Stoppe an bekannten Markern
+    m = INDICATION_STOP_RE.search(text)
+    if m:
+        text = text[:m.start()]
+    
+    # Entferne übermäßiges Whitespace
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    
+    return text.strip()
+
+
+def fallback_indication_from_table(text: str) -> str:
+    """
+    Sucht nach Tabellenzeilen vom Typ 'Indication concernée par l'évaluation: ...'
+    wie im neuen HAS-Layout (VABYSMO 2025).
+    
+    Nimmt bis zu 500 Zeichen oder bis zur nächsten Überschrift.
+    """
+    if not text:
+        return ""
+    
+    t = " ".join(text.split())
+    
+    # Pattern: Indication concernée + bis zu 500 Zeichen Content
+    m = re.search(
+        r"Indication\s+concern[ée]e?\s+par\s+l['']évaluation\s*[:\-]\s*(.{10,500}?)(?=\n\n|\n[A-Z]{4,}|$)",
+        t,
+        flags=re.I | re.DOTALL
+    )
+    
+    if m:
+        indication = m.group(1).strip()
+        # Bereinige ggf. Tabellenreste
+        indication = re.sub(r'\s+', ' ', indication)
+        return indication
+    
+    return ""
+
+
+def fallback_indication_amm_sentence(text: str) -> str:
+    """
+    Sucht im Fließtext nach AMM-Sätzen mit 'est indiqué dans/pour le traitement de...'.
+    
+    >>> txt = "GIVLAARI est indiqué dans le traitement des porphyries hépatiques aiguës."
+    >>> fallback_indication_amm_sentence(txt)
+    'GIVLAARI est indiqué dans le traitement des porphyries hépatiques aiguës.'
+    """
+    if not text:
+        return ""
+    
+    t = " ".join(text.split())
+    
+    # Suche Sätze mit "est indiqué"
+    patterns = [
+        r"([A-ZÉÈÎÙÂÔÄÖÜ][^.]{10,200}est\s+indiqu[ée]e?\s+(?:dans|pour)\s+le\s+traitement\s+[^.]{10,300}\.)",
+        r"([A-ZÉÈÎÙÂÔÄÖÜ][^.]{10,200}sont\s+indiqu[ée]e?s?\s+(?:dans|pour)\s+le\s+traitement\s+[^.]{10,300}\.)",
+    ]
+    
+    for pat in patterns:
+        m = re.search(pat, t, flags=re.I)
+        if m:
+            return m.group(1).strip()
+    
+    return ""
+
+
+def extract_one(pdf: Path, cfg_path: Path) -> Tuple[str, str]:
+    """
+    Extrahiert Indication aus einem PDF.
+    
+    Returns:
+        (indication_text, rule_id)
+    """
+    cfg = load_patterns(cfg_path)
+    options = cfg.get("options", {})
+    target = cfg.get("targets", {}).get("Indication", {})
+    pats = target.get("patterns", [])
+    min_chars = int(target.get("min_chars", MIN_INDICATION_CHARS))
+    
+    raw = read_pdf_text(pdf)
+    text = normalize_text(raw)
+    doctype = detect_document_type(text)
+    blocks = split_by_headings_v3(text, options)
+    
+    # 1) Standard-Section-Logik
+    sec, rule_id = _safe_section_and_rule(
+        find_section_with_rule(blocks, pats, min_chars=min_chars)
+    )
+    
+    # Fallback: Fließtext-Suche
+    if not sec:
+        sec_fb = fallback_extract(text, pats, window=1500)
+        sec = sec_fb or ""
+        fr = first_match_rule(text, pats)
+        if fr and not rule_id:
+            rule_id = fr or "fallback_patterns"
+    
+    cleaned = trim_indication_block(sec or "")
+    
+    # Zu kurze Sections verwerfen
+    if cleaned and len(cleaned) < MIN_INDICATION_CHARS:
+        cleaned = ""
+        rule_id = ""
+    
+    # 2) Tabellen-Fallback (neues HAS-Layout)
+    if not cleaned or len(cleaned) < MIN_INDICATION_CHARS:
+        fb_tab = fallback_indication_from_table(text)
+        if fb_tab and len(fb_tab) > len(cleaned):
+            logger.debug(f"{pdf.name}: Using table fallback")
+            cleaned = fb_tab
+            rule_id = (rule_id + "|" if rule_id else "") + "from_indication_table"
+    
+    # 3) AMM-Satz-Fallback
+    if not cleaned or len(cleaned) < MIN_INDICATION_CHARS:
+        fb_amm = fallback_indication_amm_sentence(text)
+        if fb_amm and len(fb_amm) > len(cleaned):
+            logger.debug(f"{pdf.name}: Using AMM sentence fallback")
+            cleaned = fb_amm
+            rule_id = (rule_id + "|" if rule_id else "") + "from_amm_sentence"
+    
+    # Logging
+    if cleaned:
+        logger.debug(f"{pdf.name}: Indication via {rule_id}, length={len(cleaned)}")
+    else:
+        logger.debug(f"{pdf.name}: No indication found")
+    
+    return cleaned or "", (rule_id or "")
+
+
+def main() -> None:
+    if len(sys.argv) < 4:
+        print("Usage: python extract_indication.py <pdf_or_dir> <out_csv> <patterns_yaml>")
+        sys.exit(1)
+    
+    src = Path(sys.argv[1])
+    out = Path(sys.argv[2])
+    yaml_cfg = Path(sys.argv[3])
+    
+    pdfs = list(iter_pdfs(src))
+    start_signal("extract_indication", len(pdfs))
+    
+    rows = []
+    for idx, pdf in enumerate(pdfs, start=1):
+        try:
+            txt, rule_id = extract_one(pdf, yaml_cfg)
+            if txt is None:
+                txt = ""
+            if rule_id is None:
+                rule_id = ""
+            rows.append([
+                str(pdf),
+                "indication",
+                txt,
+                make_doc_id(str(pdf)),
+                PATTERN_VERSION,
+                rule_id,
+            ])
+        except Exception as e:
+            logger.error(f"Error processing {pdf.name}: {type(e).__name__} - {str(e)}")
+            rows.append([
+                str(pdf),
+                "indication",
+                "",
+                make_doc_id(str(pdf)),
+                PATTERN_VERSION,
+                f"__ERROR__:{type(e).__name__}",
+            ])
+        progress_bar(idx, len(pdfs), prefix="Indication ")
+    
+    print()
+    end_signal("extract_indication")
+    
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f, delimiter=";")
+        w.writerow(["file", "field", "text", "doc_id", "pattern_version", "rule_id"])
+        w.writerows(rows)
+    
+    logger.info(f"Processed {len(pdfs)} PDFs, saved to {out}")
+
+
+if __name__ == "__main__":
+    main()
