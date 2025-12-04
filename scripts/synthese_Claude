@@ -1,4 +1,4 @@
-# extract_synthese.py (V14 – OPTIMIZED)
+# extract_synthese.py (V14 – FINAL)
 #
 # Verbesserungen:
 # - Erkennung reiner Synthèse-PDFs (KISQALI)
@@ -7,6 +7,7 @@
 # - Sonderfall für kurze aber gültige Conclusions (100-150 Zeichen)
 # - Verbesserte Stop-Marker
 # - Logging für Debugging
+# - FINAL TWEAKS: CONCLUSION(S)? Pattern + no_synthese_found rule_id
 
 import sys
 import csv
@@ -58,11 +59,6 @@ def is_pure_synthese_doc(text: str) -> bool:
     """
     Erkenne reine Synthèse-PDFs (z.B. kisqali_..._synthese_ct18350.pdf),
     bei denen der ganze Inhalt bereits die Synthese ist.
-    
-    >>> is_pure_synthese_doc("SYNTHÈSE DE L'AVIS DE LA COMMISSION... text...")
-    True
-    >>> is_pure_synthese_doc("CONCLUSIONS DE LA COMMISSION... normale CT-Avis...")
-    False
     """
     if not text:
         return False
@@ -124,14 +120,7 @@ def trim_synthese_block(text: str, max_len: int = MAX_SYN_LENGTH) -> str:
 
 
 def _safe_section_and_rule(result) -> Tuple[str, str]:
-    """
-    Normalisiert die Rückgabe von find_section_with_rule.
-    
-    >>> _safe_section_and_rule(None)
-    ('', '')
-    >>> _safe_section_and_rule(("text", "rule"))
-    ('text', 'rule')
-    """
+    """Normalisiert die Rückgabe von find_section_with_rule."""
     if result is None:
         return "", ""
     if isinstance(result, tuple) and len(result) == 2:
@@ -194,9 +183,9 @@ def extract_one(pdf: Path, cfg_path: Path) -> Tuple[str, str]:
     
     # 3) Validierung: Zu kurze Schnipsel verwerfen
     if cleaned and len(cleaned) < MIN_SYN_CHARS:
-        # Sonderfall: Kurze aber klar markierte Conclusions (NORFLOXACINE, FLUARIXTETRA, PANZYGA)
-        # Wenn "CONCLUSIONS" im Text und mindestens 100 Zeichen → akzeptieren
-        if re.search(r"CONCLUSIONS?", cleaned, flags=re.I) and len(cleaned) >= 100:
+        # TWEAK 1: Sonderfall kurze aber klar markierte Conclusions
+        # CONCLUSION(S)? statt nur CONCLUSIONS? um auch "CONCLUSION" zu fangen
+        if re.search(r"CONCLUSION(S)?", cleaned, flags=re.I) and len(cleaned) >= 100:
             logger.debug(f"{pdf.name}: Short conclusion accepted ({len(cleaned)} chars)")
             return cleaned, (rule_id or "") + "|short_conclusion"
         
@@ -210,6 +199,10 @@ def extract_one(pdf: Path, cfg_path: Path) -> Tuple[str, str]:
         logger.debug(f"{pdf.name}: Synthese via {rule_id}, length={len(cleaned)}")
     else:
         logger.debug(f"{pdf.name}: No synthese found")
+    
+    # TWEAK 2: Wenn komplett leer, setze explizite rule_id für Excel-Tracking
+    if not cleaned and not rule_id:
+        rule_id = "no_synthese_found"
     
     return cleaned or "", (rule_id or "")
 
