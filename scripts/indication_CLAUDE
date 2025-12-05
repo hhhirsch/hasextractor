@@ -64,24 +64,37 @@ def _safe_section_and_rule(result) -> Tuple[str, str]:
     return str(result), ""
 
 
-def trim_indication_block(text: str) -> str:
-    """
-    Schneidet den Indication-Block an typischen Grenzen ab.
-    Entfernt auch Posologie/Dosage-Informationen.
-    """
+def trim_indication_block(text: str, max_len: int = 2000) -> str:
+    """Schneide Indikation am nächsten Hauptabschnitt ab"""
     if not text:
         return ""
     
-    # Stoppe an bekannten Markern
-    m = INDICATION_STOP_RE.search(text)
+    # Stop an nächster großer Section
+    NEXT_SECTION_RE = re.compile(
+        r"^\s*(?:\d+\.?\s+)?"  # Optional Nummer
+        r"(?:POSOLOGIE|Posologie|"
+        r"POPULATION\s+CIBLE|Population\s+cible|"
+        r"COMPARATEURS?|Comparateurs?|"
+        r"ENVIRONNEMENT|Environnement|"
+        r"PLACE\s+DANS\s+LA\s+STRAT[ÉE]GIE|Place\s+dans\s+la\s+strat[ée]gie)\b",
+        re.I | re.M
+    )
+    
+    m = NEXT_SECTION_RE.search(text)
     if m:
         text = text[:m.start()]
     
-    # Entferne übermäßiges Whitespace
-    text = re.sub(r'\n{3,}', '\n\n', text)
+    # Whitespace normalisieren
+    t = re.sub(r'\n{3,}', '\n\n', text.strip())
     
-    return text.strip()
-
+    # Max-Länge (sanft an Satzende)
+    if len(t) > max_len:
+        shortened = t[:max_len]
+        last_period = shortened.rfind('.')
+        if last_period > max_len * 0.7:
+            t = shortened[:last_period + 1]
+    
+    return t.strip()
 
 def fallback_indication_from_table(text: str) -> str:
     """
