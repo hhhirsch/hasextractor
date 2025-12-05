@@ -54,6 +54,39 @@ SYN_STOP_MARKERS = [
 
 SYN_STOP_RE = re.compile("|".join(SYN_STOP_MARKERS), re.I | re.M)
 
+def extract_one(pdf: Path, cfg_path: Path) -> Tuple[str, str]:
+    cfg = load_patterns(cfg_path)
+    options = cfg.get("options", {})
+    target = cfg.get("targets", {}).get("Synthese", {})
+    pats = target.get("patterns", [])
+    min_chars = int(target.get("min_chars", MIN_SYN_CHARS))
+    
+    raw = read_pdf_text(pdf)
+    text = normalize_text(raw)
+    
+    # STANDARD-EXTRAKTION ZUERST (nicht is_pure_synthese_doc!)
+    blocks = split_by_headings_v3(text, options)
+    
+    sec, rule_id = _safe_section_and_rule(
+        find_section_with_rule(blocks, pats, min_chars=min_chars)
+    )
+    
+    if not sec:
+        sec_fb = fallback_extract(text, pats, window=2500)
+        sec = sec_fb or ""
+        fr = first_match_rule(text, pats)
+        if fr and not rule_id:
+            rule_id = fr or "fallback_patterns"
+    
+    cleaned = trim_synthese_block(sec or "")
+    
+    # NUR WENN NICHTS GEFUNDEN: is_pure_synthese_doc als Fallback
+    if not cleaned or len(cleaned) < MIN_SYN_CHARS:
+        if is_pure_synthese_doc(text):
+            full = text.strip()
+            cleaned = trim_synthese_block(full)
+            if len(cleaned) >= 80:  # Noch liberaler
+                return cleaned, "pure_synthese_doc"
 
 def is_pure_synthese_doc(text: str) -> bool:
     """
