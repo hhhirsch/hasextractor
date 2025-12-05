@@ -89,6 +89,34 @@ def trim_synthese_block(text: str, max_len: int = MAX_SYN_LENGTH) -> str:
         t = shortened[:last_period + 1]
     else:
         t = shortened.rstrip() + "..."
+
+# In trim_synthese_block() ergänzen:
+HEADER_PATTERNS = [
+    r"^\d+\s+CONCLUSIONS?\s+DE\s+LA\s+COMMISSION\s*$",
+    r"^CONCLUSIONS?\s+DE\s+LA\s+COMMISSION\s*$",
+    r"^Avis\s+définitif\s+\d+/\d+\s*$",
+    r"^Évaluation\s+Médicale.*Avis\s+\d+/\d+\s*$",
+]
+
+def trim_synthese_block(text: str, max_len: int = MAX_SYN_LENGTH) -> str:
+    if not text:
+        return ""
+    
+    # Stop-Marker wie gehabt
+    m = SYN_STOP_RE.search(text)
+    if m:
+        text = text[:m.start()]
+    
+    # Header entfernen
+    lines = text.split('\n')
+    clean_lines = []
+    for line in lines:
+        # Überspringe bekannte Header/Footer
+        if any(re.match(pat, line.strip(), re.I) for pat in HEADER_PATTERNS):
+            continue
+        clean_lines.append(line)
+    
+    t = '\n'.join(clean_lines).strip()
     
     return t.strip()
 
