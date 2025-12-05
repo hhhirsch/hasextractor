@@ -14,10 +14,52 @@ options:
   start_heading: "(?mi)^(?:\\d{1,2}(?:\\.\\d{1,2}){0,3}[\\)\\.]?[ \\t]*)?(?:INDICATIONS? TH[ÉE]RAPEUTIQUES|INDICATIONS? DE L['']AMM|INDICATIONS?|POPULATION(?:\\s+CIBLE)?|PATIENTS? CONCERN[ÉE]S?|SOUS-?POPULATION|SOUS-?GROUPE|COMPARATEURS?(?:\\s+CLINIQUEMENT\\s+PERTINENTS)?|M[ÉE]DICAMENTS? DE COMPARAISON|DISCUSSION|ANALYSE|SYNTH[ÈE]SE|CONCLUSION|CONCLUSIONS? DE LA COMMISSION|L['']ESSENTIEL|SERVICE M[ÉE]DICAL RENDU|SMR|ASMR|POPULATION CIBLE)\\b"
   strip_whitespace: true
 
-targets:
-  Indication:
-    min_chars: 80
-    patterns:
+
+Indication:
+  min_chars: 50
+  max_length: 2000
+  patterns:
+    # GRUPPE A: PIS_INS/REEV/RI - Klassische CT-Avis
+    - rule_id: indications_therapeutiques_section
+      start: '(?mi)^\s*\d{2}[\s.]*INDICATIONS?\s+TH[ÉE]RAPEUTIQUES?\b'
+      end: '(?mi)^\s*\d{2}[\s.]*(?:CONTEXTE|CONCLUSIONS?|RAPPEL|SERVICE\s+M[ÉE]DICAL|ENVIRONNEMENT|SYNTH[ÈE]SE|COMPARATEURS?|POPULATION\s+CIBLE)'
+      min_chars: 80
+      priority: 1
+    
+    # GRUPPE B: PIC_EI/AP - Contexte-Tableau
+    - rule_id: indication_concernee_tableau
+      start: '(?i)Indication\s+concern[ée]e\s+par\s+l[''']?[ée]valuation'
+      end: '(?mi)^\s*(?:Posologie|Comparateurs?|Service\s+m[ée]dical|Population)'
+      min_chars: 50
+      priority: 1
+    
+    - rule_id: indication_amm_tableau
+      start: '(?i)Indication\s+de\s+l[''']?AMM'
+      end: '(?mi)^\s*(?:Posologie|Comparateurs?|Date\s+d[''']AMM)'
+      min_chars: 50
+      priority: 1
+    
+    # GRUPPE C: PIS_RCP - Kopftabelle
+    - rule_id: indications_rcp_tableau
+      start: '(?mi)^Indications?\s*$'
+      end: '(?mi)^(?:Posologie|Contre-indications?|4\.[0-9]|Mises\s+en\s+garde)'
+      min_chars: 40
+      priority: 1
+    
+    # Fallback 1: Indication concernée(s) generisch
+    - rule_id: indication_concernee_generic
+      start: '(?i)Indication\(s\)\s+concern[ée]e\(s\)'
+      end: '(?mi)^\s*(?:[A-Z]{4,}|Liste\s+des\s+sp[ée]cialit[ée]s)'
+      min_chars: 50
+      priority: 2
+    
+    # Fallback 2: AMM-Satz im Fließtext
+    - rule_id: indication_amm_sentence
+      start: '(?i)(?:L[''']indication\s+de\s+l[''']AMM|Indication\s+retenue)\s*:\s*[«"]'
+      end: '[»"]'
+      min_chars: 40
+      priority: 3
+
       # 1) Tabellen-Felder (PIS, kurze CT-Avis, neues HAS-Layout 2025)
       # FIX: l[''] statt l['']
       - "(?mi)^\\s*Indication\\s+concern[ée]e?\\s+par\\s+l['']évaluation\\s*[:\\-]"
