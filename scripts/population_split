@@ -39,6 +39,59 @@ MIN_POP_CHARS = 40  # Konsistent auf 40 gesetzt
 MIN_SUBPOP_CHARS = 20
 MAX_SUBPOP_LENGTH = 800
 
+# In extract_population_split.py
+
+# STAGE 1: Negative Patterns (rausfiltern VOR Extraktion!)
+POPULATION_BLACKLIST_PATTERNS = [
+    r"^Demande\s+de\s+donn[ée]es",
+    r"^La\s+Commission\s+souhaite",
+    r"^\d+\s+CONCLUSIONS?\s+DE\s+LA\s+COMMISSION",
+    r"^[ÉE]VALUER\s+LES\s+TECHNOLOGIES",
+    r"^Recommandations?\s+de\s+la\s+Commission",
+    r"^de\s+la\s+d[ée]monstration.*dans\s+la\s+population",  # SMR-Text
+]
+
+def is_blacklisted_population(text: str) -> bool:
+    """Prüfe ob Text aus falscher Section stammt"""
+    head = text.strip()[:200].lower()
+    for pat in POPULATION_BLACKLIST_PATTERNS:
+        if re.search(pat, head, re.I):
+            return True
+    return False
+
+# STAGE 2: Längen-Filter
+def validate_population_length(text: str) -> Tuple[str, str]:
+    """Validiere und kürze Population"""
+    if len(text) < 40:
+        return "", "too_short"
+    
+    # Blacklist-Check
+    if is_blacklisted_population(text):
+        return "", "blacklisted_section"
+    
+    # Zu lang (>4000)? → Kürze hart an nächster Section
+    if len(text) > 4000:
+        # Schneide an nächstem nummerierten Abschnitt
+        next_section = re.search(r"\n\s*\d+\.?\s+[A-Z][A-Z\s]+", text[500:])
+        if next_section:
+            text = text[:500 + next_section.start()]
+        else:
+            # Fallback: erste 2000 Zeichen an Satzende
+            text = text[:2000]
+            last_period = text.rfind('.')
+            if last_period > 1000:
+                text = text[:last_period + 1]
+        
+        return text.strip(), "trimmed_long"
+    
+    return text.strip(), "ok"
+
+# In extract_one() nach Standard-Extraktion einfügen:
+cleaned, status = validate_population_length(sec or "")
+if not cleaned:
+    return "", status
+
+
 # Erweiterte Keep-Patterns für kurze aber wichtige Population-Aussagen
 SHORT_POP_KEEP = [
     r"population cible ne peut pas être estimée",
