@@ -31,6 +31,30 @@ from shared_utils import (
     detect_document_type,
 )
 
+# 1) LOGGING SETUP
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# 2) KONSTANTEN
+PATTERN_VERSION = "hybrid_v2.1"
+MIN_COMPARATOR_CHARS = 50
+MAX_COMPARATOR_LENGTH = 1000
+
+# 3) BLACKLIST PATTERNS (MUSS VOR is_blacklisted_comparator() stehen!)
+COMPARATOR_BLACKLIST_PATTERNS = [
+    r"^Demande\s+de\s+donn[ée]es",
+    r"^La\s+Commission\s+souhaite",
+    r"^Recommandations?",
+    r"^Il\s+existe\s+des\s+alternatives?\s+th[ée]rapeutiques?",
+]
+
+COMPARATOR_VALID_SECTIONS = [
+    "Comparateurs? cliniquement pertinents?",
+    "Environnement th[ée]rapeutique",
+    "M[ée]dicaments? de [ée]r[ée]f[ée]rence",
+]
+
+# 4) ERST JETZT die Funktionen die diese nutzen
 def is_blacklisted_comparator(text: str) -> bool:
     """Prüfe ob Text aus falscher Section stammt"""
     head = text.strip()[:200].lower()
@@ -39,42 +63,18 @@ def is_blacklisted_comparator(text: str) -> bool:
             return True
     return False
 
-# Logging einrichten
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-PATTERN_VERSION = "hybrid_v2.1"
-MIN_COMPARATOR_CHARS = 50
-MAX_COMPARATOR_LENGTH = 1000  # Default, kann per YAML überschrieben werden
-
-COMPARATOR_BLACKLIST_PATTERNS = [
-    r"^Demande\s+de\s+donn[ée]es",
-    r"^La\s+Commission\s+souhaite",
-    r"^Recommandations?",
-    r"^Il\s+existe\s+des\s+alternatives?\s+th[ée]rapeutiques?",  # Zu generisch
-]
-
-# PLUS: Nur aus richtigen Sections ziehen
-COMPARATOR_VALID_SECTIONS = [
-    "Comparateurs? cliniquement pertinents?",
-    "Environnement th[ée]rapeutique",
-    "M[ée]dicaments? de [ée]r[ée]f[ée]rence",
-]
 
 def validate_comparator(text: str, section_header: str) -> Tuple[str, str]:
     """Validiere Comparator-Text"""
     if len(text) < 20:
         return "", "too_short"
     
-    # Blacklist
     if is_blacklisted_comparator(text):
         return "", "blacklisted"
     
-    # Zu lang UND nicht aus valider Section? → Verdächtig
     if len(text) > 1200:
         if not any(re.search(pat, section_header, re.I) for pat in COMPARATOR_VALID_SECTIONS):
             return "", "long_wrong_section"
-        # Kürze
         text = text[:1200]
         last_period = text.rfind('.')
         if last_period > 800:
