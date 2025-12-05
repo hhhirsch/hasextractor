@@ -1,13 +1,4 @@
-# extract_synthese.py (V14 – FINAL)
-#
-# Verbesserungen:
-# - Erkennung reiner Synthèse-PDFs (KISQALI)
-# - Erweiterte YAML-Patterns für alle Varianten
-# - Senkung min_chars auf 150 (statt 200)
-# - Sonderfall für kurze aber gültige Conclusions (100-150 Zeichen)
-# - Verbesserte Stop-Marker
-# - Logging für Debugging
-# - FINAL TWEAKS: CONCLUSION(S)? Pattern + no_synthese_found rule_id
+# extract_synthese.py (V14 – FINAL CORRECTED)
 
 import sys
 import csv
@@ -31,15 +22,13 @@ from shared_utils import (
     end_signal,
 )
 
-# Logging einrichten
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 PATTERN_VERSION = "hybrid_v2.1"
-MIN_SYN_CHARS = 150  # Gesenkt von 200
+MIN_SYN_CHARS = 150
 MAX_SYN_LENGTH = 6000
 
-# Stop-Marker: Hier endet typischerweise die Synthese
 SYN_STOP_MARKERS = [
     r"^\s*POPULATION\s+CIBLE\b",
     r"^\s*Population\s+cible\b",
@@ -54,52 +43,15 @@ SYN_STOP_MARKERS = [
 
 SYN_STOP_RE = re.compile("|".join(SYN_STOP_MARKERS), re.I | re.M)
 
-def extract_one(pdf: Path, cfg_path: Path) -> Tuple[str, str]:
-    cfg = load_patterns(cfg_path)
-    options = cfg.get("options", {})
-    target = cfg.get("targets", {}).get("Synthese", {})
-    pats = target.get("patterns", [])
-    min_chars = int(target.get("min_chars", MIN_SYN_CHARS))
-    
-    raw = read_pdf_text(pdf)
-    text = normalize_text(raw)
-    
-    # STANDARD-EXTRAKTION ZUERST (nicht is_pure_synthese_doc!)
-    blocks = split_by_headings_v3(text, options)
-    
-    sec, rule_id = _safe_section_and_rule(
-        find_section_with_rule(blocks, pats, min_chars=min_chars)
-    )
-    
-    if not sec:
-        sec_fb = fallback_extract(text, pats, window=2500)
-        sec = sec_fb or ""
-        fr = first_match_rule(text, pats)
-        if fr and not rule_id:
-            rule_id = fr or "fallback_patterns"
-    
-    cleaned = trim_synthese_block(sec or "")
-    
-    # NUR WENN NICHTS GEFUNDEN: is_pure_synthese_doc als Fallback
-    if not cleaned or len(cleaned) < MIN_SYN_CHARS:
-        if is_pure_synthese_doc(text):
-            full = text.strip()
-            cleaned = trim_synthese_block(full)
-            if len(cleaned) >= 80:  # Noch liberaler
-                return cleaned, "pure_synthese_doc"
 
 def is_pure_synthese_doc(text: str) -> bool:
-    """
-    Erkenne reine Synthèse-PDFs (z.B. kisqali_..._synthese_ct18350.pdf),
-    bei denen der ganze Inhalt bereits die Synthese ist.
-    """
+    """Erkenne reine Synthèse-PDFs (KISQALI, etc.)"""
     if not text:
         return False
     
     t = " ".join(text.split())
     head = t[:600].lower()
     
-    # Prüfe auf typische Header reiner Synthese-PDFs
     synthese_markers = [
         "synthèse de l'avis de la commission de la transparence",
         "synthese de l'avis de la commission de la transparence",
@@ -109,7 +61,6 @@ def is_pure_synthese_doc(text: str) -> bool:
     
     for marker in synthese_markers:
         if marker in head:
-            # Zusätzliche Prüfung: Keine typischen CT-Sections danach
             if not re.search(r"indication(?:s)?\s+th[ée]rapeutiques?", head, re.I):
                 return True
     
@@ -117,33 +68,23 @@ def is_pure_synthese_doc(text: str) -> bool:
 
 
 def trim_synthese_block(text: str, max_len: int = MAX_SYN_LENGTH) -> str:
-    """
-    Schneidet den Synthese-Block intelligent:
-    - Stoppt an typischen Überschriften nach der Synthese
-    - Reduziert überlange Texte auf max_len Zeichen (an Satzende)
-    - Entfernt übermäßiges Whitespace
-    """
+    """Schneidet den Synthese-Block intelligent"""
     if not text:
         return ""
     
-    # 1) An Stop-Marker abschneiden
     m = SYN_STOP_RE.search(text)
     if m:
         text = text[:m.start()]
     
     t = text.strip()
-    
-    # 2) Whitespace normalisieren
     t = re.sub(r'\n{3,}', '\n\n', t)
     
-    # 3) Längenlimit
     if len(t) <= max_len:
         return t
     
     shortened = t[:max_len]
     last_period = shortened.rfind(".")
     
-    # Versuche an Satzende zu schneiden
     if last_period > max_len * 0.5:
         t = shortened[:last_period + 1]
     else:
@@ -153,7 +94,7 @@ def trim_synthese_block(text: str, max_len: int = MAX_SYN_LENGTH) -> str:
 
 
 def _safe_section_and_rule(result) -> Tuple[str, str]:
-    """Normalisiert die Rückgabe von find_section_with_rule."""
+    """Normalisiert die Rückgabe von find_section_with_rule"""
     if result is None:
         return "", ""
     if isinstance(result, tuple) and len(result) == 2:
@@ -168,8 +109,7 @@ def extract_one(pdf: Path, cfg_path: Path) -> Tuple[str, str]:
     """
     Extrahiert Synthese/Conclusions aus einem PDF.
     
-    Returns:
-        (synthese_text, rule_id)
+    WICHTIG: Standard-Extraktion ZUERST, is_pure_synthese_doc nur als Fallback!
     """
     cfg = load_patterns(cfg_path)
     options = cfg.get("options", {})
@@ -180,31 +120,16 @@ def extract_one(pdf: Path, cfg_path: Path) -> Tuple[str, str]:
     raw = read_pdf_text(pdf)
     text = normalize_text(raw)
     
-    # 0) Sonderfall: Reine Synthèse-PDFs (KISQALI, etc.)
-    if is_pure_synthese_doc(text):
-        full = text.strip()
-        cleaned = trim_synthese_block(full)
-        
-        # Für reine Synthese-PDFs: sehr liberale min_chars
-        if len(cleaned) < MIN_SYN_CHARS:
-            if len(cleaned) >= 80:
-                logger.debug(f"{pdf.name}: Pure synthese doc (short, {len(cleaned)} chars)")
-                return cleaned, "pure_synthese_doc|short"
-            logger.debug(f"{pdf.name}: Pure synthese doc too short ({len(cleaned)} chars)")
-            return "", "pure_synthese_too_short"
-        
-        logger.debug(f"{pdf.name}: Pure synthese doc, length={len(cleaned)}")
-        return cleaned, "pure_synthese_doc"
-    
-    # Standard-Extraktion für reguläre CT-Avis
+    # ===================================================================
+    # STUFE 1: STANDARD-EXTRAKTION (deckt 95% der Fälle ab!)
+    # ===================================================================
     blocks = split_by_headings_v3(text, options)
     
-    # 1) Section-basiert über YAML-Patterns
     sec, rule_id = _safe_section_and_rule(
         find_section_with_rule(blocks, pats, min_chars=min_chars)
     )
     
-    # 2) Fallback: Fließtext-Suche
+    # Fallback: Fließtext-Suche
     if not sec:
         sec_fb = fallback_extract(text, pats, window=2500)
         sec = sec_fb or ""
@@ -214,27 +139,38 @@ def extract_one(pdf: Path, cfg_path: Path) -> Tuple[str, str]:
     
     cleaned = trim_synthese_block(sec or "")
     
-    # 3) Validierung: Zu kurze Schnipsel verwerfen
+    # Validierung: Zu kurze Schnipsel verwerfen
     if cleaned and len(cleaned) < MIN_SYN_CHARS:
-        # TWEAK 1: Sonderfall kurze aber klar markierte Conclusions
-        # CONCLUSION(S)? statt nur CONCLUSIONS? um auch "CONCLUSION" zu fangen
         if re.search(r"CONCLUSION(S)?", cleaned, flags=re.I) and len(cleaned) >= 100:
             logger.debug(f"{pdf.name}: Short conclusion accepted ({len(cleaned)} chars)")
             return cleaned, (rule_id or "") + "|short_conclusion"
         
-        # Zu kurz und nicht als Conclusion markiert
         logger.debug(f"{pdf.name}: Synthese too short ({len(cleaned)} chars), discarding")
         cleaned = ""
         rule_id = ""
     
-    # Logging
+    # ===================================================================
+    # STUFE 2: NUR WENN STUFE 1 NICHTS FAND - Pure Synthese Doc Check
+    # ===================================================================
+    if not cleaned:
+        if is_pure_synthese_doc(text):
+            full = text.strip()
+            cleaned = trim_synthese_block(full)
+            
+            if len(cleaned) >= 80:
+                logger.debug(f"{pdf.name}: Pure synthese doc, length={len(cleaned)}")
+                return cleaned, "pure_synthese_doc"
+            else:
+                logger.debug(f"{pdf.name}: Pure synthese doc too short ({len(cleaned)} chars)")
+                return "", "pure_synthese_too_short"
+    
+    # ===================================================================
+    # RÜCKGABE
+    # ===================================================================
     if cleaned:
         logger.debug(f"{pdf.name}: Synthese via {rule_id}, length={len(cleaned)}")
     else:
         logger.debug(f"{pdf.name}: No synthese found")
-    
-    # TWEAK 2: Wenn komplett leer, setze explizite rule_id für Excel-Tracking
-    if not cleaned and not rule_id:
         rule_id = "no_synthese_found"
     
     return cleaned or "", (rule_id or "")
@@ -294,3 +230,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
