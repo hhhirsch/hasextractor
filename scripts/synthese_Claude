@@ -83,8 +83,15 @@ def trim_synthese_block(text: str, max_len: int = MAX_SYN_LENGTH) -> str:
     m = SYN_STOP_RE.search(text)
     if m:
         text = text[:m.start()]
-    
-    # Header entfernen
+
+    HEADER_PATTERNS = [
+        r"^\d+\s+CONCLUSIONS?\s+DE\s+LA\s+COMMISSION\s*$",
+        r"^CONCLUSIONS?\s+DE\s+LA\s+COMMISSION\s*$",
+        r"^ÉVALUER\s+LES\s+TECHNOLOGIES\s+DE\s+SANTÉ.*AVIS\s+SUR\s+LES\s+MÉDICAMENTS.*$",
+        r"^RECOMMANDATIONS?\s+DE\s+LA\s+COMMISSION\s*$",
+        r"^Avis\s+définitif\s+\d+/\d+\s*$",
+    ]
+
     lines = text.split('\n')
     clean_lines = []
     for line in lines:
