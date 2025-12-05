@@ -31,6 +31,14 @@ from shared_utils import (
     detect_document_type,
 )
 
+def is_blacklisted_comparator(text: str) -> bool:
+    """Prüfe ob Text aus falscher Section stammt"""
+    head = text.strip()[:200].lower()
+    for pat in COMPARATOR_BLACKLIST_PATTERNS:
+        if re.search(pat, head, re.I):
+            return True
+    return False
+
 # Logging einrichten
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -358,7 +366,12 @@ def extract_one(pdf: Path, cfg_path: Path) -> Tuple[str, str]:
             rule_id = fr or "fallback_patterns"
     
     cleaned = trim_comparator_block(sec or "", max_len=max_len)
-    
+    if cleaned:
+        cleaned, comp_status = validate_comparator(cleaned, rule_id or "")
+        if not cleaned:
+            logger.debug(f"{pdf.name}: Comparator rejected: {comp_status}")
+            rule_id = comp_status
+
     if cleaned and len(cleaned) < MIN_COMPARATOR_CHARS:
         cleaned = ""
         rule_id = ""
