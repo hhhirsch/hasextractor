@@ -350,6 +350,11 @@ def extract_one(pdf: Path, cfg_path: Path, ind_map: Dict[str, str]) -> Tuple[str
             pop_rule = first_match_rule(text, pop_pats) or "fallback_patterns"
     
     pop = trim_population_block(pop or "")
+		if pop:
+        pop, pop_status = validate_population_length(pop)
+        if not pop:
+            logger.debug(f"{pdf.name}: Population rejected: {pop_status}")
+            pop_rule = pop_status
     
     # 2) Fallback aus Indication
     ind = ind_map.get(doc_id, "")
