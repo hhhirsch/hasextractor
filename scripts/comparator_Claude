@@ -39,6 +39,41 @@ PATTERN_VERSION = "hybrid_v2.1"
 MIN_COMPARATOR_CHARS = 50
 MAX_COMPARATOR_LENGTH = 1000  # Default, kann per YAML überschrieben werden
 
+COMPARATOR_BLACKLIST_PATTERNS = [
+    r"^Demande\s+de\s+donn[ée]es",
+    r"^La\s+Commission\s+souhaite",
+    r"^Recommandations?",
+    r"^Il\s+existe\s+des\s+alternatives?\s+th[ée]rapeutiques?",  # Zu generisch
+]
+
+# PLUS: Nur aus richtigen Sections ziehen
+COMPARATOR_VALID_SECTIONS = [
+    "Comparateurs? cliniquement pertinents?",
+    "Environnement th[ée]rapeutique",
+    "M[ée]dicaments? de [ée]r[ée]f[ée]rence",
+]
+
+def validate_comparator(text: str, section_header: str) -> Tuple[str, str]:
+    """Validiere Comparator-Text"""
+    if len(text) < 20:
+        return "", "too_short"
+    
+    # Blacklist
+    if is_blacklisted_comparator(text):
+        return "", "blacklisted"
+    
+    # Zu lang UND nicht aus valider Section? → Verdächtig
+    if len(text) > 1200:
+        if not any(re.search(pat, section_header, re.I) for pat in COMPARATOR_VALID_SECTIONS):
+            return "", "long_wrong_section"
+        # Kürze
+        text = text[:1200]
+        last_period = text.rfind('.')
+        if last_period > 800:
+            text = text[:last_period + 1]
+    
+    return text.strip(), "ok"
+
 # Priorisierte rule_ids (höhere Qualität)
 PRIORITY_RULES = ['comparateurs_section', 'no_progress_vs_ref', 'comparateurs_section_generic']
 
