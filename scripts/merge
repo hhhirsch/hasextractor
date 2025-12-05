@@ -72,7 +72,26 @@ def guess_product_from_doc_name(path_str: str) -> str:
     return ""
 
 
-# ✅ HIERHER: Funktionen VOR main() definieren
+def flag_synthese_quality(row):
+    """Markiere Synthese-Qualität für Review"""
+    syn = str(row.get('Synthese', '')).strip()
+    
+    if not syn:
+        return 'empty'
+    
+    flags = []
+    
+    # Zu lang?
+    if len(syn) > 4000:
+        flags.append('very_long')
+    
+    # Zu kurz für echte Synthese?
+    if len(syn) < 300:
+        flags.append('very_short')
+    
+    return '|'.join(flags) if flags else 'good'
+
+
 def flag_comparator_quality(row):
     """Markiere Comparator-Qualität für Review"""
     comp = str(row.get('Comparator', '')).strip()
@@ -152,7 +171,7 @@ def main():
             pop_small = popsplit[["file", "Population", "Subpopulation"]]
             frames.append(pop_small)
 
-    # ✅ GEÄNDERT: Comparator MIT rule_id laden
+    # Comparator MIT rule_id laden
     if not comp.empty and "text" in comp.columns:
         cols_to_load = ["file", "text"]
         if "rule_id" in comp.columns:
@@ -173,26 +192,27 @@ def main():
     from functools import reduce
     merged = reduce(lambda l, r: pd.merge(l, r, on="file", how="outer"), frames)
 
-    # doc_name & CT-Nummer
+    # doc_name & CT-Nummer & Produktname
     merged["doc_name"] = merged["file"].astype(str).str.extract(r"([^\\/]+)$")
     merged["ct_number"] = merged["file"].astype(str).str.extract(r"(CT-\d+)", expand=False)
     merged["product_name"] = merged["file"].astype(str).apply(guess_product_from_doc_name)
 
-    # ✅ NEU: Comparator-Quality VOR dem Excel-Export berechnen!
+    # Quality-Flags berechnen
     merged['comparator_quality'] = merged.apply(flag_comparator_quality, axis=1)
     merged['Comparator_clean'] = merged.apply(clean_comparator, axis=1)
+    merged['synthese_quality'] = merged.apply(flag_synthese_quality, axis=1)
 
-    # ✅ Spaltenreihenfolge inkl. neuer Spalten
+    # Spaltenreihenfolge
     cols = [
         "file", "doc_name", "ct_number", "product_name",
         "Indication", "Population", "Subpopulation",
         "Comparator", "comparator_quality", "Comparator_clean",
-        "Synthese",
+        "Synthese", "synthese_quality",
     ]
     other = [c for c in merged.columns if c not in cols]
     merged = merged[cols + other]
 
-    # QC
+    # QC-Counts
     total = len(merged)
     counts = {
         "total_rows": total,
@@ -202,6 +222,7 @@ def main():
         "Comparator_nonempty": int(is_nonempty_series(merged.get("Comparator", pd.Series(dtype=str))).sum()),
         "Comparator_clean_nonempty": int(is_nonempty_series(merged.get("Comparator_clean", pd.Series(dtype=str))).sum()),
         "Synthese_nonempty": int(is_nonempty_series(merged.get("Synthese", pd.Series(dtype=str))).sum()),
+        "Synthese_quality_good": int((merged.get("synthese_quality", pd.Series(dtype=str)) == 'good').sum()),
     }
 
     print("\n=== Merge Summary ===")
@@ -211,6 +232,7 @@ def main():
     # Illegale Excel-Zeichen entfernen
     merged = merged.applymap(strip_illegal_excel_chars)
 
+    # Excel schreiben
     out_xlsx.parent.mkdir(parents=True, exist_ok=True)
     with pd.ExcelWriter(out_xlsx, engine="openpyxl") as writer:
         merged.to_excel(writer, index=False, sheet_name="HAS_extraktionen")
