@@ -67,42 +67,14 @@ def is_pure_synthese_doc(text: str) -> bool:
     return False
 
 
-def trim_synthese_block(text: str, max_len: int = MAX_SYN_LENGTH) -> str:
-    """Schneidet den Synthese-Block intelligent"""
-    if not text:
-        return ""
-    
-    m = SYN_STOP_RE.search(text)
-    if m:
-        text = text[:m.start()]
-    
-    t = text.strip()
-    t = re.sub(r'\n{3,}', '\n\n', t)
-    
-    if len(t) <= max_len:
-        return t
-    
-    shortened = t[:max_len]
-    last_period = shortened.rfind(".")
-    
-    if last_period > max_len * 0.5:
-        t = shortened[:last_period + 1]
-    else:
-        t = shortened.rstrip() + "..."
-
-# In trim_synthese_block() ergänzen:
-HEADER_PATTERNS = [
-    r"^\d+\s+CONCLUSIONS?\s+DE\s+LA\s+COMMISSION\s*$",
-    r"^CONCLUSIONS?\s+DE\s+LA\s+COMMISSION\s*$",
-    r"^Avis\s+définitif\s+\d+/\d+\s*$",
-    r"^Évaluation\s+Médicale.*Avis\s+\d+/\d+\s*$",
-]
+# LÖSCHE die erste Definition (Zeile 70-85)
+# BEHALTE nur die zweite (ab Zeile 87), aber ergänze max_len:
 
 def trim_synthese_block(text: str, max_len: int = MAX_SYN_LENGTH) -> str:
     if not text:
         return ""
     
-    # Stop-Marker wie gehabt
+    # Stop-Marker
     m = SYN_STOP_RE.search(text)
     if m:
         text = text[:m.start()]
@@ -111,15 +83,23 @@ def trim_synthese_block(text: str, max_len: int = MAX_SYN_LENGTH) -> str:
     lines = text.split('\n')
     clean_lines = []
     for line in lines:
-        # Überspringe bekannte Header/Footer
         if any(re.match(pat, line.strip(), re.I) for pat in HEADER_PATTERNS):
             continue
         clean_lines.append(line)
     
     t = '\n'.join(clean_lines).strip()
+    t = re.sub(r'\n{3,}', '\n\n', t)
+    
+    # MAX_LEN LOGIC (war in erster Definition):
+    if len(t) > max_len:
+        shortened = t[:max_len]
+        last_period = shortened.rfind(".")
+        if last_period > max_len * 0.5:
+            t = shortened[:last_period + 1]
+        else:
+            t = shortened.rstrip() + "..."
     
     return t.strip()
-
 
 def _safe_section_and_rule(result) -> Tuple[str, str]:
     """Normalisiert die Rückgabe von find_section_with_rule"""
