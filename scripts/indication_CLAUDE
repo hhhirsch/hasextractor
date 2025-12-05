@@ -63,38 +63,73 @@ def _safe_section_and_rule(result) -> Tuple[str, str]:
         return result, ""
     return str(result), ""
 
+# Blacklist-Patterns für Indication
+INDICATION_BLACKLIST_START = [
+    r"^La\s+Commission\s+donne\s+un\s+avis",
+    r"^Demande\s+de\s+donn[ée]es",
+    r"^Recommandations?\s+(?:particuli[èe]res?|de\s+la\s+Commission)",
+    r"^[ÉE]VALUER\s+LES\s+TECHNOLOGIES",
+    r"^HAS\s*-\s*Direction\s+de\s+l['']Evaluation",
+]
+
+def is_blacklisted_indication(text: str) -> bool:
+    """Prüfe ob Text kein gültiger Indikations-Start ist"""
+    head = text.strip()[:200]
+    for pat in INDICATION_BLACKLIST_START:
+        if re.search(pat, head, re.I):
+            return True
+    return False
 
 def trim_indication_block(text: str, max_len: int = 2000) -> str:
     """Schneide Indikation am nächsten Hauptabschnitt ab"""
     if not text:
         return ""
     
-    # Stop an nächster großer Section
-    NEXT_SECTION_RE = re.compile(
-        r"^\s*(?:\d+\.?\s+)?"  # Optional Nummer
-        r"(?:POSOLOGIE|Posologie|"
+    # 1) Blacklist-Check
+    if is_blacklisted_indication(text):
+        logger.debug("Indication rejected: blacklisted start pattern")
+        return ""
+    
+    # 2) "concernée(s)" am Anfang entfernen
+    text = re.sub(r"^concern[ée]e?\(s\)\s*\n+", "", text, flags=re.I)
+    
+    # 3) Stop an Evaluation-Headers (KRITISCH!)
+    EVALUATION_STOP_RE = re.compile(
+        r"^\s*(?:"
+        r"(?:\d+\.?\s+)?(?:RAPPEL\s+DU\s+SERVICE\s+M[ÉE]DICAL\s+RENDU|"
+        r"SYNTH[ÈE]SE\s+DES\s+DONN[ÉE]ES|"
+        r"CONCLUSIONS?\s+DE\s+LA\s+COMMISSION|"
+        r"DEMANDE\s+DE\s+DONN[ÉE]ES|"
+        r"HAS\s*-\s*Direction\s+de\s+l['']Evaluation|"
+        r"\d+\s+CONCLUSIONS?\s+DE\s+LA\s+COMMISSION)|"
+        # Andere Section-Starts
+        r"(?:\d+\.?\s+)?(?:POSOLOGIE|Posologie|"
         r"POPULATION\s+CIBLE|Population\s+cible|"
         r"COMPARATEURS?|Comparateurs?|"
         r"ENVIRONNEMENT|Environnement|"
-        r"PLACE\s+DANS\s+LA\s+STRAT[ÉE]GIE|Place\s+dans\s+la\s+strat[ée]gie)\b",
+        r"PLACE\s+DANS\s+LA\s+STRAT[ÉE]GIE))\b",
         re.I | re.M
     )
     
-    m = NEXT_SECTION_RE.search(text)
+    m = EVALUATION_STOP_RE.search(text)
     if m:
         text = text[:m.start()]
     
-    # Whitespace normalisieren
+    # 4) Whitespace normalisieren
     t = re.sub(r'\n{3,}', '\n\n', text.strip())
     
-    # Max-Länge (sanft an Satzende)
+    # 5) Längen-Limit (sanft an Satzende)
     if len(t) > max_len:
         shortened = t[:max_len]
         last_period = shortened.rfind('.')
         if last_period > max_len * 0.7:
             t = shortened[:last_period + 1]
+        else:
+            # Zu hart geschnitten - lieber mehr behalten
+            t = shortened
     
     return t.strip()
+
 
 def fallback_indication_from_table(text: str) -> str:
     """
@@ -178,6 +213,12 @@ def extract_one(pdf: Path, cfg_path: Path) -> Tuple[str, str]:
         fr = first_match_rule(text, pats)
         if fr and not rule_id:
             rule_id = fr or "fallback_patterns"
+
+    cleaned = trim_indication_block(sec or "")
+    if cleaned:
+        cleaned, validation_status = validate_indication_by_doctype(cleaned, pdf.name)
+        if validation_status != "ok":
+            rule_id = (rule_id or "") + f"|{validation_status}"
     
     cleaned = trim_indication_block(sec or "")
     
