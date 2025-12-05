@@ -81,29 +81,47 @@ targets:
       - "(?mi)\\bcomparateurs?\\s+cliniquement\\s+pertinents?\\b"
 
   Synthese:
-    min_chars: 150  # Gesenkt von 200 für kurze Conclusions
+    min_chars: 150
     max_length: 6000
     patterns:
-      # 1) Klassisch: Conclusions de la Commission (de la Transparence)
-      - "(?mi)^\\s*(?:\\d{1,2}[\\. \\t]*)?CONCLUSIONS?\\s+DE\\s+LA\\s+COMMISSION(?:\\s+DE\\s+LA\\s+TRANSPARENCE)?\\b"
-
-      # 2) Einfachere Varianten
-      - "(?mi)^\\s*(?:\\d{1,2}[\\. \\t]*)?CONCLUSIONS?\\b"
-      - "(?mi)^\\s*(?:\\d{1,2}[\\. \\t]*)?CONCLUSION\\b"
-
-      # 3) Synthèse-Varianten (für reine Synthese-PDFs wie KISQALI)
-      # FIX: L[''] statt L['']
-      - "(?mi)^\\s*(?:\\d{1,2}[\\. \\t]*)?SYNTH[ÈE]SE\\b"
-      - "(?mi)^\\s*SYNTH[ÈE]SE\\s+DE\\s+L['']AVIS\\b"
-      - "(?mi)^\\s*SYNTH[ÈE]SE\\s+DE\\s+L['']AVIS\\s+DE\\s+LA\\s+COMMISSION\\s+DE\\s+LA\\s+TRANSPARENCE\\b"
-
-      # 4) Kurz-Avis / One-Pager: L'essentiel
-      # FIX: L[''] statt L['']
-      - "(?mi)^\\s*L['']ESSENTIEL\\b"
-
-      # 5) Reevaluations: Position / Avis de la Commission
-      - "(?mi)^\\s*(?:\\d{1,2}[\\. \\t]*)?AVIS\\s+DE\\s+LA\\s+COMMISSION\\b"
-      - "(?mi)^\\s*POSITION\\s+DE\\s+LA\\s+COMMISSION\\b"
-
-      # 6) Weitere Varianten
-      - "(?mi)^\\s*(?:\\d{1,2}[\\. \\t]*)?DISCUSSION\\b"
+     # S1: Neues AVIS Layout (höchste Priorität)
+     - rule_id: synthese_avis_section
+       start: '(?i)synth[èe]se\s+de\s+l[''']avis'
+       end: '^\s*[0-9]+[\).]\s*(?:Contexte|Indication|M[ée]thode)'
+       min_chars: 300
+    
+     # S3: Klassische CONCLUSIONS DE LA COMMISSION (Standard)
+      - rule_id: conclusions_commission
+        start: '(?mi)^\s*(?:\d{1,2}[\s.]*)?CONCLUSIONS?\s+DE\s+LA\s+COMMISSION(?:\s+DE\s+LA\s+TRANSPARENCE)?\b'
+        end: '(?:^\s*(?:\d{1,2}[\s.]*)?(?:RECOMMANDATIONS?|ANNEXE|Programme|Bibliographie)|\Z)'
+        min_chars: 150
+    
+    # S6: PIC_REEV Compte tenu / En conséquence
+    - rule_id: compte_tenu_consequence
+      start: 'Compte\s+tenu\s*:'
+      end: '(?:En\s+conséquence|Ainsi|Par\s+cons[ée]quent).*?[.!]'
+      min_chars: 200
+    
+    # Fallback 1: Einfache CONCLUSIONS
+    - rule_id: conclusions_simple
+      start: '(?mi)^\s*(?:\d{1,2}[\s.]*)?CONCLUSIONS?\b'
+      end: '(?:^\s*(?:\d{1,2}[\s.]*)?[A-Z]{4,}|\Z)'
+      min_chars: 150
+    
+    # Fallback 2: SYNTHÈSE allgemein
+    - rule_id: synthese_general
+      start: '(?mi)^\s*(?:\d{1,2}[\s.]*)?SYNTH[ÈE]SE\b'
+      end: '(?:^\s*(?:\d{1,2}[\s.]*)?[A-Z]{4,}|\Z)'
+      min_chars: 150
+    
+    # Fallback 3: L'ESSENTIEL (4-Seiten-Avis)
+    - rule_id: lessentiel
+      start: '(?mi)^\s*L[''']ESSENTIEL\b'
+      end: '(?:Quel\s+progr[èe]s|^\s*[0-9]+[\s.])'
+      min_chars: 100
+    
+    # Fallback 4: AVIS/POSITION DE LA COMMISSION
+    - rule_id: avis_commission
+      start: '(?mi)^\s*(?:\d{1,2}[\s.]*)?(?:AVIS|POSITION)\s+DE\s+LA\s+COMMISSION\b'
+      end: '(?:^\s*(?:\d{1,2}[\s.]*)?[A-Z]{4,}|\Z)'
+      min_chars: 150
