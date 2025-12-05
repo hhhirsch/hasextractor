@@ -40,12 +40,17 @@ PATTERN_VERSION = "hybrid_v2.1"
 MIN_COMPARATOR_CHARS = 50
 MAX_COMPARATOR_LENGTH = 1000
 
-# 3) BLACKLIST PATTERNS (MUSS VOR is_blacklisted_comparator() stehen!)
 COMPARATOR_BLACKLIST_PATTERNS = [
     r"^Demande\s+de\s+donn[ée]es",
     r"^La\s+Commission\s+souhaite",
-    r"^Recommandations?",
+    r"^Recommandations?\s+(?:particuli[èe]res?|de\s+la\s+Commission)",
+    # NEU: Generische Alternativen
     r"^Il\s+existe\s+des\s+alternatives?\s+th[ée]rapeutiques?",
+    r"^Il\s+existe\s+des\s+alternatives?\s+m[ée]dicamenteuses?",
+    # NEU: Compte tenu (Bewertungstext)
+    r"^Compte\s+tenu",
+    # NEU: Nur Referenz-Spezialität ohne echte Comparators
+    r"^Cette\s+sp[ée]cialit[ée]\s+est\s+un\s+g[ée]n[ée]rique\s+de\s+la\s+sp[ée]cialit[ée]\s+de\s+r[ée]f[ée]rence\.?\s*$",
 ]
 
 COMPARATOR_VALID_SECTIONS = [
@@ -140,6 +145,19 @@ def trim_comparator_block(text: str, max_len: int = MAX_COMPARATOR_LENGTH) -> st
     m = COMPARATOR_STOP_RE.search(text)
     if m:
         text = text[:m.start()]
+    EVAL_CUT_PATTERNS = [
+        r"\bCompte\s+tenu\b",
+        r"\bDemande\s+de\s+donn[ée]es\b",
+        r"\bLa\s+Commission\s+souhaite\b",
+        r"\bRecommandations?\s+(?:particuli[èe]res?|de\s+la\s+Commission)\b",
+    ]
+    for pat in EVAL_CUT_PATTERNS:
+        m = re.search(pat, text, re.I)
+        if m and m.start() > 50:  # Nicht wenn ganz am Anfang (wird von Blacklist gefangen)
+            text = text[:m.start()]
+            logger.debug(f"Trimmed comparator at evaluation pattern: {pat}")
+            break
+
     lines = [ln for ln in text.splitlines() if ln.strip()]
     kept = [ln for ln in lines if not _is_numeric_heavy(ln)]
     t = "\n".join(kept).strip()
@@ -377,23 +395,30 @@ def extract_one(pdf: Path, cfg_path: Path) -> Tuple[str, str]:
         rule_id = ""
     
     # Inhaltliche Fallbacks
-    if not cleaned:
+        if not cleaned:
         no_ccp = fallback_no_comparator(text)
         if no_ccp:
             cleaned = no_ccp
-            rule_id = (rule_id or "") + ("|no_ccp_fallback" if rule_id else "no_ccp_fallback")
+            rule_id = "no_ccp_fallback"  # ✅ Kein Pipe mehr
     
+    # ✅ GEÄNDERT: Generische Alternativen als LETZTER Fallback, aber markiert
     if not cleaned:
         gen = fallback_generic_comparator(text)
         if gen:
-            cleaned = gen
-            rule_id = (rule_id or "") + ("|generic_ref" if rule_id else "generic_ref")
+            # Nur bei PIS_INS akzeptieren, sonst zu generisch
+            if "PIS_INS" in pdf.name.upper() or "PIS_RCP" in pdf.name.upper():
+                cleaned = gen
+                rule_id = "generic_ref|REVIEW_NEEDED"
+            else:
+                logger.debug(f"{pdf.name}: Generic ref too vague for {pdf.name}")
     
+    # ✅ GEÄNDERT: Alternative treatments NUR als Info, nicht als Comparator
     if not cleaned:
         alt = fallback_alternative_treatments(text)
         if alt:
-            cleaned = alt
-            rule_id = (rule_id or "") + ("|alt_treatments" if rule_id else "alt_treatments")
+            # Nicht als Comparator nutzen - zu generisch
+            logger.debug(f"{pdf.name}: Found generic alternatives but discarding (too vague)")
+            return "", "generic_alternatives_only"
     
     # 2) Spezialisierte Heuristik mit verbesserter Priorisierung
     spec_comp, spec_rule = infer_comparator(text, product_name)
@@ -410,6 +435,21 @@ def extract_one(pdf: Path, cfg_path: Path) -> Tuple[str, str]:
             logger.debug(f"{pdf.name}: Using longer spec_comp ({len(spec_comp)} vs {len(cleaned)})")
             cleaned = spec_comp
             rule_id = spec_rule
+    
+    # Logging
+    if cleaned:
+        logger.debug(f"{pdf.name}: Comparator via {rule_id}, length={len(cleaned)}")
+    else:
+        logger.debug(f"{pdf.name}: No comparator found")
+    if "PIS_RI" in pdf.name.upper():
+        # Nur akzeptieren wenn echte Medikamentennamen enthalten
+        if cleaned:
+            # Check: Hat der Text konkrete Medikamentennamen (CAPS)?
+            drug_mentions = re.findall(r'\b[A-Z][A-Z]{2,}(?:\s+\([^)]+\))?\b', cleaned)
+            if len(drug_mentions) < 2:
+                # Nur generische Sätze - verwerfen
+                logger.debug(f"{pdf.name}: PIS_RI with no specific drug names, discarding")
+                return "", "pis_ri_generic_only"
     
     # Logging
     if cleaned:
