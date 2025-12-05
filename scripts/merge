@@ -1,0 +1,223 @@
+# merge_to_excel_split.py
+#
+# Usage:
+#   python merge_to_excel_split.py <out_dir> <population_split_csv> <out_excel>
+
+import sys
+from pathlib import Path
+import os
+import re
+
+import pandas as pd
+
+
+def load_csv_semicolon(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(path, sep=";")
+    except Exception:
+        return pd.read_csv(path)
+
+
+def is_nonempty_series(s: pd.Series) -> pd.Series:
+    return s.fillna("").astype(str).str.strip().str.len() > 0
+
+
+ILLEGAL_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
+
+
+def strip_illegal_excel_chars(val):
+    if isinstance(val, str):
+        return ILLEGAL_RE.sub("", val)
+    return val
+
+
+BAD_TOKENS = {
+    "CT", "PIC", "PIS", "INS", "EI", "AP", "REEV", "REAP",
+    "AVIS", "AVISDEF", "DEF", "MIN", "AUT", "POSTAMM", "PREAMM",
+    "DECISION", "COLLEGE", "ET", "AVISCT", "AP214"
+}
+
+
+def guess_product_from_doc_name(path_str: str) -> str:
+    """Extrahiere Produktname aus Dateiname."""
+    if not path_str:
+        return ""
+    
+    base = os.path.basename(path_str)
+    stem = re.sub(r"\.(pdf|PDF)$", "", base)
+    parts = stem.split("_")
+    
+    if len(parts) >= 3 and re.match(r"CT-\d+", parts[0], re.I) and re.match(r"CT-\d+", parts[1], re.I):
+        return parts[2]
+    
+    if len(parts) >= 2 and re.match(r"ctap\d+", parts[0], re.I):
+        for p in parts[1:]:
+            token = p.strip("_-")
+            if token.isupper() and len(token) >= 3 and token.upper() not in BAD_TOKENS:
+                return token
+    
+    for p in parts:
+        token = p.strip("_-")
+        if token.isupper() and len(token) >= 3 and token.upper() not in BAD_TOKENS:
+            return token
+    
+    m = re.search(r"\b([A-Z][A-Z0-9]{2,})\b", stem)
+    if m:
+        token = m.group(1)
+        if token.upper() not in BAD_TOKENS:
+            return token
+    
+    return ""
+
+
+# ✅ HIERHER: Funktionen VOR main() definieren
+def flag_comparator_quality(row):
+    """Markiere Comparator-Qualität für Review"""
+    comp = str(row.get('Comparator', '')).strip()
+    rule_id = str(row.get('rule_id_comparator', '')).strip()
+    doc_type = str(row.get('doc_name', ''))
+    
+    if not comp:
+        return 'empty'
+    
+    flags = []
+    
+    # Generische Sätze
+    generic_patterns = [
+        r"Il\s+existe\s+des\s+alternatives?\s+(?:th[ée]rapeutiques?|m[ée]dicamenteuses?)",
+        r"^Cette\s+sp[ée]cialit[ée]\s+est\s+un\s+g[ée]n[ée]rique",
+    ]
+    if any(re.search(pat, comp, re.I) for pat in generic_patterns):
+        flags.append('generic')
+    
+    # Demande/Recommandations
+    eval_patterns = [
+        r"Demande\s+de\s+donn[ée]es",
+        r"La\s+Commission\s+souhaite",
+        r"Recommandations?\s+(?:particuli[èe]res?|de\s+la\s+Commission)",
+    ]
+    if any(re.search(pat, comp, re.I) for pat in eval_patterns):
+        flags.append('contains_demande')
+    
+    # PIS_RI speziell
+    if 'PIS_RI' in doc_type.upper() and not flags:
+        flags.append('pis_ri_check')
+    
+    # Zu kurz für echte Comparators?
+    if len(comp) < 50 and 'no_ccp' not in rule_id:
+        flags.append('very_short')
+    
+    return '|'.join(flags) if flags else 'good'
+
+
+def clean_comparator(row):
+    """Clean Comparator (nur 'good' behalten)"""
+    if row.get('comparator_quality', '') == 'good':
+        return row.get('Comparator', '')
+    return ''
+
+
+def main():
+    if len(sys.argv) < 4:
+        print("Usage: python merge_to_excel_split.py <out_dir> <population_split_csv> <out_excel>")
+        sys.exit(1)
+
+    out_dir = Path(sys.argv[1])
+    popsplit_path = Path(sys.argv[2])
+    out_xlsx = Path(sys.argv[3])
+
+    # CSVs laden
+    ind_path = out_dir / "indication.csv"
+    comp_path = out_dir / "comparator.csv"
+    syn_path = out_dir / "synthese.csv"
+
+    ind = load_csv_semicolon(ind_path)
+    comp = load_csv_semicolon(comp_path)
+    syn = load_csv_semicolon(syn_path)
+    popsplit = load_csv_semicolon(popsplit_path)
+
+    frames = []
+
+    # Indication
+    if not ind.empty and "text" in ind.columns:
+        ind_small = ind[["file", "text"]].rename(columns={"text": "Indication"})
+        frames.append(ind_small)
+
+    # Population + Subpopulation
+    if not popsplit.empty:
+        needed = {"file", "Population", "Subpopulation"}
+        if needed.issubset(set(popsplit.columns)):
+            pop_small = popsplit[["file", "Population", "Subpopulation"]]
+            frames.append(pop_small)
+
+    # ✅ GEÄNDERT: Comparator MIT rule_id laden
+    if not comp.empty and "text" in comp.columns:
+        cols_to_load = ["file", "text"]
+        if "rule_id" in comp.columns:
+            cols_to_load.append("rule_id")
+        comp_small = comp[cols_to_load].copy()
+        comp_small.rename(columns={"text": "Comparator", "rule_id": "rule_id_comparator"}, inplace=True)
+        frames.append(comp_small)
+
+    # Synthese
+    if not syn.empty and "text" in syn.columns:
+        syn_small = syn[["file", "text"]].rename(columns={"text": "Synthese"})
+        frames.append(syn_small)
+
+    if not frames:
+        print("Keine verwertbaren CSVs gefunden – Abbruch.")
+        sys.exit(0)
+
+    from functools import reduce
+    merged = reduce(lambda l, r: pd.merge(l, r, on="file", how="outer"), frames)
+
+    # doc_name & CT-Nummer
+    merged["doc_name"] = merged["file"].astype(str).str.extract(r"([^\\/]+)$")
+    merged["ct_number"] = merged["file"].astype(str).str.extract(r"(CT-\d+)", expand=False)
+    merged["product_name"] = merged["file"].astype(str).apply(guess_product_from_doc_name)
+
+    # ✅ NEU: Comparator-Quality VOR dem Excel-Export berechnen!
+    merged['comparator_quality'] = merged.apply(flag_comparator_quality, axis=1)
+    merged['Comparator_clean'] = merged.apply(clean_comparator, axis=1)
+
+    # ✅ Spaltenreihenfolge inkl. neuer Spalten
+    cols = [
+        "file", "doc_name", "ct_number", "product_name",
+        "Indication", "Population", "Subpopulation",
+        "Comparator", "comparator_quality", "Comparator_clean",
+        "Synthese",
+    ]
+    other = [c for c in merged.columns if c not in cols]
+    merged = merged[cols + other]
+
+    # QC
+    total = len(merged)
+    counts = {
+        "total_rows": total,
+        "Indication_nonempty": int(is_nonempty_series(merged.get("Indication", pd.Series(dtype=str))).sum()),
+        "Population_nonempty": int(is_nonempty_series(merged.get("Population", pd.Series(dtype=str))).sum()),
+        "Subpopulation_nonempty": int(is_nonempty_series(merged.get("Subpopulation", pd.Series(dtype=str))).sum()),
+        "Comparator_nonempty": int(is_nonempty_series(merged.get("Comparator", pd.Series(dtype=str))).sum()),
+        "Comparator_clean_nonempty": int(is_nonempty_series(merged.get("Comparator_clean", pd.Series(dtype=str))).sum()),
+        "Synthese_nonempty": int(is_nonempty_series(merged.get("Synthese", pd.Series(dtype=str))).sum()),
+    }
+
+    print("\n=== Merge Summary ===")
+    for k, v in counts.items():
+        print(f"{k:>30s}: {v}")
+
+    # Illegale Excel-Zeichen entfernen
+    merged = merged.applymap(strip_illegal_excel_chars)
+
+    out_xlsx.parent.mkdir(parents=True, exist_ok=True)
+    with pd.ExcelWriter(out_xlsx, engine="openpyxl") as writer:
+        merged.to_excel(writer, index=False, sheet_name="HAS_extraktionen")
+        pd.DataFrame([counts]).to_excel(writer, index=False, sheet_name="summary")
+
+    print(f"\nExcel geschrieben nach: {out_xlsx}")
+
+
+if __name__ == "__main__":
+    main()
