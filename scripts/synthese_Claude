@@ -42,7 +42,12 @@ SYN_STOP_MARKERS = [
 ]
 
 SYN_STOP_RE = re.compile("|".join(SYN_STOP_MARKERS), re.I | re.M)
-
+HEADER_PATTERNS = [
+    r"^\d+\s+CONCLUSIONS?\s+DE\s+LA\s+COMMISSION\s*$",
+    r"^CONCLUSIONS?\s+DE\s+LA\s+COMMISSION\s*$",
+    r"^Avis\s+définitif\s+\d+/\d+\s*$",
+    r"^Évaluation\s+Médicale.*Avis\s+\d+/\d+\s*$",
+]
 
 def is_pure_synthese_doc(text: str) -> bool:
     """Erkenne reine Synthèse-PDFs (KISQALI, etc.)"""
