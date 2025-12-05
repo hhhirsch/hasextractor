@@ -1,12 +1,4 @@
-# extract_indication.py (V14 – FINAL)
-#
-# Verbesserungen:
-# - Neue Patterns für HAS-Tabellen-Layout (VABYSMO 2025)
-# - Fallback für "Indication concernée par l'évaluation"
-# - Erweiterte Kapitelnummerierung (02, 2., etc.)
-# - Logging für Debugging
-# - Robustes Error-Handling
-# - FIXES: Tabellen-Fallback behält Newlines, Apostrophe korrekt
+# extract_indication.py (V14 – FINAL CORRECTED)
 
 import sys
 import csv
@@ -37,23 +29,21 @@ logger = logging.getLogger(__name__)
 PATTERN_VERSION = "hybrid_v2.1"
 MIN_INDICATION_CHARS = 80
 
-# Stop-Marker für Indication-Section (FIX: Apostrophe erweitert)
+# Stop-Marker für Indication-Section
 INDICATION_STOP_MARKERS = [
     r"^\s*(?:POSOLOGIE|DOSAGE)\b",
-    r"^\s*MODE\s+D['']ADMINISTRATION\b",  # FIX: ' und ' und '
+    r"^\s*MODE\s+D['']ADMINISTRATION\b",
     r"^\s*CONTRE[-\s]?INDICATIONS?\b",
     r"^\s*MISES?\s+EN\s+GARDE\b",
     r"^\s*POPULATION\s+CIBLE\b",
     r"^\s*COMPARATEURS?\b",
-    r"^\s*(?:03|3\.)\s+",  # Nächstes Kapitel
+    r"^\s*(?:03|3\.)\s+",
 ]
 INDICATION_STOP_RE = re.compile("|".join(INDICATION_STOP_MARKERS), re.I | re.M)
 
 
 def _safe_section_and_rule(result) -> Tuple[str, str]:
-    """
-    Normalisiert die Rückgabe von find_section_with_rule.
-    """
+    """Normalisiert die Rückgabe von find_section_with_rule."""
     if result is None:
         return "", ""
     if isinstance(result, tuple) and len(result) == 2:
@@ -63,98 +53,141 @@ def _safe_section_and_rule(result) -> Tuple[str, str]:
         return result, ""
     return str(result), ""
 
-# Blacklist-Patterns für Indication
+
+# Blacklist-Patterns (EINE vollständige Definition)
 INDICATION_BLACKLIST_START = [
-    r"^La\s+Commission\s+donne\s+un\s+avis",
+    r"^La\s+Commission\s+(?:donne|a\s+donn[ée])\s+un\s+avis\s+(?:favorable|d[ée]favorable)",
+    r"^La\s+Commission\s+consid[èe]re\s+que\s+le\s+service\s+m[ée]dical\s+rendu",
+    r"^Compte\s+tenu\s+de\s+l['']ensemble\s+de\s+ces\s+[ée]l[ée]ments",
     r"^Demande\s+de\s+donn[ée]es",
     r"^Recommandations?\s+(?:particuli[èe]res?|de\s+la\s+Commission)",
+    r"^Service\s+M[ÉE]dical\s+Rendu\b",
+    r"^Am[ée]lioration\s+du\s+Service\s+M[ée]dical\s+Rendu\b",
+    r"^Liste\s+des\s+indications?\s+d[ée]j[àa]\s+[ée]valu[ée]es",
     r"^[ÉE]VALUER\s+LES\s+TECHNOLOGIES",
-    r"^HAS\s*-\s*Direction\s+de\s+l['']Evaluation",
 ]
 
-def is_blacklisted_indication(text: str) -> bool:
-    """Prüfe ob Text kein gültiger Indikations-Start ist"""
-    head = text.strip()[:200]
+INDICATION_STOP_HEADERS = [
+    r"^\s*\d{2}[\s.]*(?:CONCLUSIONS?|CONTEXTE|RAPPEL|ENVIRONNEMENT|SYNTH[ÈE]SE)\b",
+    r"^\s*(?:SERVICE\s+M[ÉE]DICAL\s+RENDU|SMR)\b",
+    r"^\s*(?:AM[ÉE]LIORATION\s+DU\s+SERVICE|ASMR)\b",
+    r"^\s*COMPARATEURS?\s+CLINIQUEMENT\b",
+    r"^\s*POPULATION\s+CIBLE\b",
+    r"^\s*VALIDATION\s+DE\s+L['']INDICATION\b",
+]
+
+
+def is_blacklisted_indication_start(text: str) -> bool:
+    """Prüfe ob Text mit verbotenen Indication-Starts beginnt"""
+    head = text.strip()[:300]
     for pat in INDICATION_BLACKLIST_START:
-        if re.search(pat, head, re.I):
+        if re.search(pat, head, re.I | re.M):
             return True
     return False
 
+
 def trim_indication_block(text: str, max_len: int = 2000) -> str:
-    """Schneide Indikation am nächsten Hauptabschnitt ab"""
+    """Schneide Indikation intelligent ab"""
     if not text:
         return ""
     
     # 1) Blacklist-Check
-    if is_blacklisted_indication(text):
-        logger.debug("Indication rejected: blacklisted start pattern")
+    if is_blacklisted_indication_start(text):
+        logger.debug("Indication rejected: blacklisted start")
         return ""
     
     # 2) "concernée(s)" am Anfang entfernen
-    text = re.sub(r"^concern[ée]e?\(s\)\s*\n+", "", text, flags=re.I)
+    text = re.sub(r"^Indication\(s\)\s+concern[ée]e\(s\)\s*\n+", "", text, flags=re.I)
     
-    # 3) Stop an Evaluation-Headers (KRITISCH!)
-    EVALUATION_STOP_RE = re.compile(
-        r"^\s*(?:"
-        r"(?:\d+\.?\s+)?(?:RAPPEL\s+DU\s+SERVICE\s+M[ÉE]DICAL\s+RENDU|"
-        r"SYNTH[ÈE]SE\s+DES\s+DONN[ÉE]ES|"
-        r"CONCLUSIONS?\s+DE\s+LA\s+COMMISSION|"
-        r"DEMANDE\s+DE\s+DONN[ÉE]ES|"
-        r"HAS\s*-\s*Direction\s+de\s+l['']Evaluation|"
-        r"\d+\s+CONCLUSIONS?\s+DE\s+LA\s+COMMISSION)|"
-        # Andere Section-Starts
-        r"(?:\d+\.?\s+)?(?:POSOLOGIE|Posologie|"
-        r"POPULATION\s+CIBLE|Population\s+cible|"
-        r"COMPARATEURS?|Comparateurs?|"
-        r"ENVIRONNEMENT|Environnement|"
-        r"PLACE\s+DANS\s+LA\s+STRAT[ÉE]GIE))\b",
-        re.I | re.M
-    )
+    # 3) Extrahiere Guillemets-Block (höchste Qualität)
+    guillemets_match = re.search(r'«\s*(.+?)\s*»', text, re.DOTALL)
+    if guillemets_match and len(guillemets_match.group(1)) >= 40:
+        candidate = guillemets_match.group(1).strip()
+        candidate = re.sub(r'\n+\s*\d+\s+HAS\..*$', '', candidate, flags=re.I)
+        candidate = re.sub(r'\n+\s*Disponible\s+sur\s*:.*$', '', candidate, flags=re.I)
+        return candidate[:max_len].strip()
     
-    m = EVALUATION_STOP_RE.search(text)
+    # 4) Stop an Evaluation-Headers
+    STOP_RE = re.compile('|'.join(INDICATION_STOP_HEADERS), re.I | re.M)
+    m = STOP_RE.search(text)
     if m:
         text = text[:m.start()]
     
-    # 4) Whitespace normalisieren
-    t = re.sub(r'\n{3,}', '\n\n', text.strip())
+    # 5) Fußnoten/Referenzen entfernen
+    lines = text.split('\n')
+    clean_lines = []
+    for line in lines:
+        if re.match(r'^\s*\d+\s+(?:HAS\.|http)', line, re.I):
+            break
+        if re.match(r'^\s*Disponible\s+sur\s*:', line, re.I):
+            break
+        clean_lines.append(line)
     
-    # 5) Längen-Limit (sanft an Satzende)
+    t = '\n'.join(clean_lines).strip()
+    t = re.sub(r'\n{3,}', '\n\n', t)
+    
+    # 6) Längenlimit
     if len(t) > max_len:
-        shortened = t[:max_len]
-        last_period = shortened.rfind('.')
-        if last_period > max_len * 0.7:
-            t = shortened[:last_period + 1]
+        last_guillemet = t[:max_len].rfind('»')
+        if last_guillemet > max_len * 0.6:
+            period_after = t[last_guillemet:max_len].find('.')
+            if period_after != -1:
+                t = t[:last_guillemet + period_after + 1]
+            else:
+                t = t[:last_guillemet + 1]
         else:
-            # Zu hart geschnitten - lieber mehr behalten
-            t = shortened
+            shortened = t[:max_len]
+            last_period = shortened.rfind('.')
+            if last_period > max_len * 0.7:
+                t = shortened[:last_period + 1]
+            else:
+                t = shortened
     
     return t.strip()
 
 
-def fallback_indication_from_table(text: str) -> str:
-    """
-    Sucht nach Tabellenzeilen vom Typ 'Indication concernée par l'évaluation: ...'
-    wie im neuen HAS-Layout (VABYSMO 2025).
+def extract_indication_by_doctype(text: str, filename: str) -> Tuple[str, str]:
+    """Dokumenttyp-spezifische Indication-Extraktion"""
+    fname_upper = filename.upper()
     
-    FIX: Behält Zeilenumbrüche, damit Überschrifts-Erkennung funktioniert.
-    """
+    # PIS_RCP: Nur Guillemets-Block akzeptieren
+    if 'PIS_RCP' in fname_upper:
+        guillemets = re.search(r'«\s*(.+?)\s*»', text, re.DOTALL)
+        if guillemets and len(guillemets.group(1)) >= 40:
+            return guillemets.group(1).strip(), "rcp_guillemets"
+        return "", "rcp_no_guillemets"
+    
+    # PIC_EI/AP: Bevorzuge Tableau-Felder
+    if any(x in fname_upper for x in ['PIC_EI', 'AP_', '_AP']):
+        concernee_block = re.search(
+            r'Indication\s+concern[ée]e.*?«\s*(.+?)\s*»',
+            text,
+            re.DOTALL | re.I
+        )
+        if concernee_block:
+            return concernee_block.group(1).strip(), "pic_ei_tableau"
+    
+    # PIS_INS: Sollte nicht mit "concernée(s)" beginnen
+    if 'PIS_INS' in fname_upper:
+        if text.strip().startswith('concernée'):
+            text = re.sub(r'^concern[ée]e\(s\)\s*\n+', '', text, flags=re.I)
+    
+    return text, "ok"
+
+
+def fallback_indication_from_table(text: str) -> str:
+    """Sucht nach Tabellenzeilen 'Indication concernée par l'évaluation'"""
     if not text:
         return ""
     
-    # FIX: NICHT glätten – wir wollen Zeilenumbrüche behalten für Lookahead
-    t = text
-    
-    # Pattern: Indication concernée + bis zur nächsten Überschrift/Leerzeile
-    # FIX: Apostrophe erweitert auf ' und ' und '
     m = re.search(
         r"Indication\s+concern[ée]e?\s+par\s+l['']évaluation\s*[:\-]\s*(.+?)(?=\n\s*\n|\n[A-Z][A-ZÉÈÎÂÔÛÄÖÜ]{3,}|$)",
-        t,
+        text,
         flags=re.I | re.DOTALL
     )
     
     if m:
         indication = m.group(1).strip()
-        # Jetzt Whitespace glätten (nachdem wir extrahiert haben)
         indication = re.sub(r'\s+', ' ', indication)
         return indication
     
@@ -162,15 +195,12 @@ def fallback_indication_from_table(text: str) -> str:
 
 
 def fallback_indication_amm_sentence(text: str) -> str:
-    """
-    Sucht im Fließtext nach AMM-Sätzen mit 'est indiqué dans/pour le traitement de...'.
-    """
+    """Sucht AMM-Sätze mit 'est indiqué dans/pour le traitement de'"""
     if not text:
         return ""
     
     t = " ".join(text.split())
     
-    # Suche Sätze mit "est indiqué" / "sont indiqués"
     patterns = [
         r"([A-ZÉÈÎÙÂÔÄÖÜ][^.]{10,200}est\s+indiqu[ée]e?\s+(?:dans|pour)\s+le\s+traitement\s+[^.]{10,300}\.)",
         r"([A-ZÉÈÎÙÂÔÄÖÜ][^.]{10,200}sont\s+indiqu[ée]e?s?\s+(?:dans|pour)\s+le\s+traitement\s+[^.]{10,300}\.)",
@@ -185,12 +215,7 @@ def fallback_indication_amm_sentence(text: str) -> str:
 
 
 def extract_one(pdf: Path, cfg_path: Path) -> Tuple[str, str]:
-    """
-    Extrahiert Indication aus einem PDF.
-    
-    Returns:
-        (indication_text, rule_id)
-    """
+    """Extrahiert Indication aus einem PDF."""
     cfg = load_patterns(cfg_path)
     options = cfg.get("options", {})
     target = cfg.get("targets", {}).get("Indication", {})
@@ -206,42 +231,41 @@ def extract_one(pdf: Path, cfg_path: Path) -> Tuple[str, str]:
         find_section_with_rule(blocks, pats, min_chars=min_chars)
     )
     
-    # Fallback: Fließtext-Suche
     if not sec:
         sec_fb = fallback_extract(text, pats, window=1500)
         sec = sec_fb or ""
         fr = first_match_rule(text, pats)
         if fr and not rule_id:
             rule_id = fr or "fallback_patterns"
-
+    
+    # 2) Trimmen und Dokumenttyp-Validierung
     cleaned = trim_indication_block(sec or "")
+    
     if cleaned:
-        cleaned, validation_status = validate_indication_by_doctype(cleaned, pdf.name)
-        if validation_status != "ok":
-            rule_id = (rule_id or "") + f"|{validation_status}"
+        cleaned, doctype_status = extract_indication_by_doctype(cleaned, pdf.name)
+        if doctype_status != "ok":
+            rule_id = (rule_id or "") + f"|{doctype_status}"
     
-    cleaned = trim_indication_block(sec or "")
-    
-    # Zu kurze Sections verwerfen
+    # Zu kurz? → Verwerfen
     if cleaned and len(cleaned) < MIN_INDICATION_CHARS:
         cleaned = ""
         rule_id = ""
     
-    # 2) Tabellen-Fallback (neues HAS-Layout - VABYSMO)
-    if not cleaned or len(cleaned) < MIN_INDICATION_CHARS:
+    # 3) Tabellen-Fallback
+    if not cleaned:
         fb_tab = fallback_indication_from_table(text)
-        if fb_tab and len(fb_tab) > len(cleaned):
+        if fb_tab and len(fb_tab) >= MIN_INDICATION_CHARS:
             logger.debug(f"{pdf.name}: Using table fallback")
             cleaned = fb_tab
-            rule_id = (rule_id + "|" if rule_id else "") + "from_indication_table"
+            rule_id = "from_indication_table"
     
-    # 3) AMM-Satz-Fallback
-    if not cleaned or len(cleaned) < MIN_INDICATION_CHARS:
+    # 4) AMM-Satz-Fallback
+    if not cleaned:
         fb_amm = fallback_indication_amm_sentence(text)
-        if fb_amm and len(fb_amm) > len(cleaned):
+        if fb_amm and len(fb_amm) >= MIN_INDICATION_CHARS:
             logger.debug(f"{pdf.name}: Using AMM sentence fallback")
             cleaned = fb_amm
-            rule_id = (rule_id + "|" if rule_id else "") + "from_amm_sentence"
+            rule_id = "from_amm_sentence"
     
     # Logging
     if cleaned:
