@@ -53,6 +53,67 @@ COMPARATOR_BLACKLIST_PATTERNS = [
     r"^Cette\s+sp[ée]cialit[ée]\s+est\s+un\s+g[ée]n[ée]rique\s+de\s+la\s+sp[ée]cialit[ée]\s+de\s+r[ée]f[ée]rence\.?\s*$",
 ]
 
+# Comparator NO-GO Headers (TISSEEL, LEPTOPROL Fix)
+COMPARATOR_NOGO_HEADERS = [
+    r"^\s*(?:0?[4-6]|[4-6][\s.)\]]*)\s*BESOIN\s+M[ÉE]DICAL",
+    r"^\s*(?:0?[5-9]|[5-9][\s.)\]]*)\s*POSOLOGIE",
+    r"^\s*(?:0?[5-9]|[5-9][\s.)\]]*)\s*MODE\s+D['']ADMINISTRATION",
+    r"^\s*(?:0?[89]|[89][\s.)\]]*)\s*SERVICE\s+M[ÉE]DICAL\s+RENDU",
+    r"^\s*(?:0?[89]|[89][\s.)\]]*)\s*(?:SMR|ASMR)\b",
+    r"^\s*(?:0?[89]|[89][\s.)\]]*)\s*AM[ÉE]LIORATION\s+DU\s+SERVICE",
+]
+
+# Comparator NO-GO Start-Phrasen (HYQVIA, TARCEVA Fix)
+COMPARATOR_NOGO_STARTS = [
+    r"^Mode\s+d['']administration",
+    r"^Pas\s+de\s+progr[èe]s\s+dans\s+la\s+prise\s+en\s+charge",
+    r"^La\s+Commission\s+consid[èe]re\s+que\s+le\s+service\s+m[ée]dical",
+    r"^Le\s+cancer\s+de\s+la\s+prostate",  # LEPTOPROL-spezifisch
+]
+
+def is_nogo_comparator(text: str) -> bool:
+    """Prüfe ob Text klar KEIN Comparator ist"""
+    if not text:
+        return False
+    
+    head = text.strip()[:400]
+    
+    # Check NO-GO Headers
+    for pat in COMPARATOR_NOGO_HEADERS:
+        if re.search(pat, head, re.I | re.M):
+            logger.debug(f"Comparator rejected: NO-GO header matched {pat}")
+            return True
+    
+    # Check NO-GO Starts
+    for pat in COMPARATOR_NOGO_STARTS:
+        if re.search(pat, head, re.I | re.M):
+            logger.debug(f"Comparator rejected: NO-GO start matched {pat}")
+            return True
+    
+    # Nur SMR/ASMR, kein "comparateur"?
+    if "service médical rendu" in head.lower() and "comparateur" not in head.lower():
+        logger.debug("Comparator rejected: SMR without comparateur mention")
+        return True
+    
+    return False
+
+def is_meta_alternatives_only(text: str) -> bool:
+    """Prüfe ob nur generischer Alternativ-Satz ohne Substanzen"""
+    if not text or len(text) > 400:
+        return False
+    
+    t = text.strip().lower()
+    
+    # Nur "Il existe des alternatives thérapeutiques"?
+    generic_only_pattern = r"^il\s+existe\s+des\s+alternatives?\s+(?:th[ée]rapeutiques?|m[ée]dicamenteuses?)[^.]*\.?\s*$"
+    if re.match(generic_only_pattern, t, re.I):
+        # Keine konkreten Substanzen/Produktnamen?
+        if not re.search(r'\b[A-Z][A-Z]{2,}\b', text):  # Keine CAPS-Namen
+            logger.debug("Comparator is meta-alternatives only")
+            return True
+    
+    return False
+
 COMPARATOR_VALID_SECTIONS = [
     "Comparateurs? cliniquement pertinents?",
     "Environnement th[ée]rapeutique",
@@ -172,6 +233,39 @@ def trim_comparator_block(text: str, max_len: int = MAX_COMPARATOR_LENGTH) -> st
         t = shortened.rstrip() + "..."
     return t.strip()
 
+def extract_one(pdf: Path, cfg_path: Path) -> Tuple[str, str]:
+    # ... [existing code bis trim_comparator_block] ...
+    
+    cleaned = trim_comparator_block(sec or "", max_len=max_len)
+    
+    # ✅ NEU: Multi-Layer Validation
+    if cleaned:
+        # Layer 1: NO-GO Check (TISSEEL, LEPTOPROL, HYQVIA)
+        if is_nogo_comparator(cleaned):
+            logger.debug(f"{pdf.name}: Comparator rejected by NO-GO filter")
+            cleaned = ""
+            rule_id = "nogo_comparator_rejected"
+        
+        # Layer 2: Meta-Alternatives Only (TARCEVA)
+        elif is_meta_alternatives_only(cleaned):
+            logger.debug(f"{pdf.name}: Comparator is meta-alternatives only")
+            rule_id = (rule_id or "") + "|meta_alternatives_only"
+            # Optional: Für TARCEVA-Typ verwerfen statt behalten
+            if len(cleaned) < 150:
+                cleaned = ""
+                rule_id = "meta_alternatives_discarded"
+        
+        # Layer 3: Bestehende Validation
+        else:
+            cleaned, comp_status = validate_comparator(cleaned, rule_id or "")
+            if not cleaned:
+                logger.debug(f"{pdf.name}: Comparator rejected: {comp_status}")
+                rule_id = comp_status
+    
+    # ✅ WICHTIG: Bei leerem Comparator jetzt explizit markieren (RYBREVANT Fix)
+    if not cleaned:
+        if not rule_id or rule_id == "":
+            rule_id = "no_comparator_found"
 
 def fallback_no_comparator(full_text: str) -> str:
     """
