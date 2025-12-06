@@ -1,11 +1,12 @@
-# extract_comparator.py (V14 – FINAL)
+# extract_comparator.py (V14 – FINAL CORRECTED)
 #
 # Verbesserungen gegenüber V13:
 # - Logging für Debugging
 # - Verbesserte Priorisierung der Heuristik
 # - Generische DCI-Extraktion statt Hardcode
 # - Konfigurierbare max_length aus YAML
-# - Docstring-Tests für kritische Funktionen
+# - NO-GO Filters für TISSEEL/LEPTOPROL/HYQVIA
+# - Meta-Alternatives Handling für TARCEVA
 # - CRITICAL FIXES: Apostroph-Varianten (' ' ') vollständig abgedeckt
 
 import sys
@@ -28,7 +29,6 @@ from shared_utils import (
     start_signal,
     progress_bar,
     end_signal,
-    detect_document_type,
 )
 
 # 1) LOGGING SETUP
@@ -44,16 +44,12 @@ COMPARATOR_BLACKLIST_PATTERNS = [
     r"^Demande\s+de\s+donn[ée]es",
     r"^La\s+Commission\s+souhaite",
     r"^Recommandations?\s+(?:particuli[èe]res?|de\s+la\s+Commission)",
-    # NEU: Generische Alternativen
     r"^Il\s+existe\s+des\s+alternatives?\s+th[ée]rapeutiques?",
     r"^Il\s+existe\s+des\s+alternatives?\s+m[ée]dicamenteuses?",
-    # NEU: Compte tenu (Bewertungstext)
     r"^Compte\s+tenu",
-    # NEU: Nur Referenz-Spezialität ohne echte Comparators
     r"^Cette\s+sp[ée]cialit[ée]\s+est\s+un\s+g[ée]n[ée]rique\s+de\s+la\s+sp[ée]cialit[ée]\s+de\s+r[ée]f[ée]rence\.?\s*$",
 ]
 
-# Comparator NO-GO Headers (TISSEEL, LEPTOPROL Fix)
 COMPARATOR_NOGO_HEADERS = [
     r"^\s*(?:0?[4-6]|[4-6][\s.)\]]*)\s*BESOIN\s+M[ÉE]DICAL",
     r"^\s*(?:0?[5-9]|[5-9][\s.)\]]*)\s*POSOLOGIE",
@@ -63,13 +59,49 @@ COMPARATOR_NOGO_HEADERS = [
     r"^\s*(?:0?[89]|[89][\s.)\]]*)\s*AM[ÉE]LIORATION\s+DU\s+SERVICE",
 ]
 
-# Comparator NO-GO Start-Phrasen (HYQVIA, TARCEVA Fix)
 COMPARATOR_NOGO_STARTS = [
     r"^Mode\s+d['']administration",
     r"^Pas\s+de\s+progr[èe]s\s+dans\s+la\s+prise\s+en\s+charge",
     r"^La\s+Commission\s+consid[èe]re\s+que\s+le\s+service\s+m[ée]dical",
-    r"^Le\s+cancer\s+de\s+la\s+prostate",  # LEPTOPROL-spezifisch
+    r"^Le\s+cancer\s+de\s+la\s+prostate",
 ]
+
+COMPARATOR_VALID_SECTIONS = [
+    "Comparateurs? cliniquement pertinents?",
+    "Environnement th[ée]rapeutique",
+    "M[ée]dicaments? de [ée]r[ée]f[ée]rence",
+]
+
+PRIORITY_RULES = ['comparateurs_section', 'no_progress_vs_ref', 'comparateurs_section_generic']
+
+COMPARATOR_STOP_MARKERS = [
+    r"^\s*(?:SERVICE\s+M[ÉE]DICAL\s+RENDU|SMR)\b",
+    r"^\s*AM[ÉE]LIORATION\s+DU\s+SERVICE\s+M[ÉE]DICAL\s+RENDU\b",
+    r"^\s*ASMR\b",
+    r"^\s*BESOIN\s+M[ÉE]DICAL\b",
+    r"^\s*ENVIRONNEMENT\s+M[ÉE]DICAL\b",
+    r"^\s*POPULATION\s+CIBLE\b",
+    r"^\s*SYNTH[ÈE]SE\b",
+    r"^\s*RECOMMANDATIONS?\b",
+]
+COMPARATOR_STOP_RE = re.compile("|".join(COMPARATOR_STOP_MARKERS), re.I | re.M)
+
+MED_REF_PATTERNS = [
+    r"pas de progrès par rapport au médicament de référence\s*\((?P<ref>[^)]+)\)",
+    r"pas de progrès par rapport aux princeps\s*\((?P<ref>[^)]+)\)",
+    r"n['']apporte pas d['']amélioration du service médical rendu\s*\(ASMR\s*V\)\s*par rapport à\s*(?P<ref>[^.;]+)",
+]
+
+COMPARATOR_SECTION_HEADER = r"Comparateurs?\s+cliniquement\s+pertinents"
+DRUG_NAME_PATTERN = r"\b([A-ZÉÈÎÙÂÔÄÖÜ][A-Z0-9\-]+)\s*\([^)]*\)"
+
+GENERIC_SENTENCE_PATTERNS = [
+    r"([^.]{0,200}g[ée]n[ée]rique[s]?\s+de\s+la\s+sp[ée]cialit[ée]\s+de\s+référence[^.]*\.)",
+    r"([^.]{0,200}sp[ée]cialit[ée]\s+de\s+référence[^.]*\.)",
+]
+
+
+# 3) VALIDIERUNGS-FUNKTIONEN
 
 def is_nogo_comparator(text: str) -> bool:
     """Prüfe ob Text klar KEIN Comparator ist"""
@@ -78,24 +110,22 @@ def is_nogo_comparator(text: str) -> bool:
     
     head = text.strip()[:400]
     
-    # Check NO-GO Headers
     for pat in COMPARATOR_NOGO_HEADERS:
         if re.search(pat, head, re.I | re.M):
             logger.debug(f"Comparator rejected: NO-GO header matched {pat}")
             return True
     
-    # Check NO-GO Starts
     for pat in COMPARATOR_NOGO_STARTS:
         if re.search(pat, head, re.I | re.M):
             logger.debug(f"Comparator rejected: NO-GO start matched {pat}")
             return True
     
-    # Nur SMR/ASMR, kein "comparateur"?
     if "service médical rendu" in head.lower() and "comparateur" not in head.lower():
         logger.debug("Comparator rejected: SMR without comparateur mention")
         return True
     
     return False
+
 
 def is_meta_alternatives_only(text: str) -> bool:
     """Prüfe ob nur generischer Alternativ-Satz ohne Substanzen"""
@@ -103,24 +133,15 @@ def is_meta_alternatives_only(text: str) -> bool:
         return False
     
     t = text.strip().lower()
-    
-    # Nur "Il existe des alternatives thérapeutiques"?
     generic_only_pattern = r"^il\s+existe\s+des\s+alternatives?\s+(?:th[ée]rapeutiques?|m[ée]dicamenteuses?)[^.]*\.?\s*$"
     if re.match(generic_only_pattern, t, re.I):
-        # Keine konkreten Substanzen/Produktnamen?
-        if not re.search(r'\b[A-Z][A-Z]{2,}\b', text):  # Keine CAPS-Namen
+        if not re.search(r'\b[A-Z][A-Z]{2,}\b', text):
             logger.debug("Comparator is meta-alternatives only")
             return True
     
     return False
 
-COMPARATOR_VALID_SECTIONS = [
-    "Comparateurs? cliniquement pertinents?",
-    "Environnement th[ée]rapeutique",
-    "M[ée]dicaments? de [ée]r[ée]f[ée]rence",
-]
 
-# 4) ERST JETZT die Funktionen die diese nutzen
 def is_blacklisted_comparator(text: str) -> bool:
     """Prüfe ob Text aus falscher Section stammt"""
     head = text.strip()[:200].lower()
@@ -148,24 +169,11 @@ def validate_comparator(text: str, section_header: str) -> Tuple[str, str]:
     
     return text.strip(), "ok"
 
-# Priorisierte rule_ids (höhere Qualität)
-PRIORITY_RULES = ['comparateurs_section', 'no_progress_vs_ref', 'comparateurs_section_generic']
 
-COMPARATOR_STOP_MARKERS = [
-    r"^\s*(?:SERVICE\s+M[ÉE]DICAL\s+RENDU|SMR)\b",
-    r"^\s*AM[ÉE]LIORATION\s+DU\s+SERVICE\s+M[ÉE]DICAL\s+RENDU\b",
-    r"^\s*ASMR\b",
-    r"^\s*BESOIN\s+M[ÉE]DICAL\b",
-    r"^\s*ENVIRONNEMENT\s+M[ÉE]DICAL\b",
-    r"^\s*POPULATION\s+CIBLE\b",
-    r"^\s*SYNTH[ÈE]SE\b",
-    r"^\s*RECOMMANDATIONS?\b",
-]
-COMPARATOR_STOP_RE = re.compile("|".join(COMPARATOR_STOP_MARKERS), re.I | re.M)
-
+# 4) HILFSFUNKTIONEN
 
 def _safe_section_and_rule(result: Any) -> Tuple[str, str]:
-    """Normalisiert die Rückgabe von find_section_with_rule auf (sec, rule_id)."""
+    """Normalisiert die Rückgabe von find_section_with_rule"""
     if result is None:
         return "", ""
     if isinstance(result, tuple) and len(result) == 2:
@@ -177,16 +185,7 @@ def _safe_section_and_rule(result: Any) -> Tuple[str, str]:
 
 
 def _is_numeric_heavy(line: str) -> bool:
-    """
-    Erkennt echte Tabellen-/Zahlenzeilen.
-    
-    >>> _is_numeric_heavy("160 180 200 250 300 Test")
-    True
-    >>> _is_numeric_heavy("Les comparateurs cliniquement pertinents sont:")
-    False
-    >>> _is_numeric_heavy("75% 80% 85% 90% x")
-    True
-    """
+    """Erkennt echte Tabellen-/Zahlenzeilen"""
     if not line:
         return False
     num_groups = len(re.findall(r"\b\d+(?:\.\d+)?\b", line))
@@ -200,12 +199,14 @@ def _is_numeric_heavy(line: str) -> bool:
 
 
 def trim_comparator_block(text: str, max_len: int = MAX_COMPARATOR_LENGTH) -> str:
-    """Schneidet den Comparator-Block intelligent."""
+    """Schneidet den Comparator-Block intelligent"""
     if not text:
         return ""
+    
     m = COMPARATOR_STOP_RE.search(text)
     if m:
         text = text[:m.start()]
+    
     EVAL_CUT_PATTERNS = [
         r"\bCompte\s+tenu\b",
         r"\bDemande\s+de\s+donn[ée]es\b",
@@ -214,68 +215,36 @@ def trim_comparator_block(text: str, max_len: int = MAX_COMPARATOR_LENGTH) -> st
     ]
     for pat in EVAL_CUT_PATTERNS:
         m = re.search(pat, text, re.I)
-        if m and m.start() > 50:  # Nicht wenn ganz am Anfang (wird von Blacklist gefangen)
+        if m and m.start() > 50:
             text = text[:m.start()]
             logger.debug(f"Trimmed comparator at evaluation pattern: {pat}")
             break
-
+    
     lines = [ln for ln in text.splitlines() if ln.strip()]
     kept = [ln for ln in lines if not _is_numeric_heavy(ln)]
     t = "\n".join(kept).strip()
     t = re.sub(r'\n{3,}', '\n\n', t)
+    
     if len(t) <= max_len:
         return t.strip()
+    
     shortened = t[:max_len]
     last_period = shortened.rfind(".")
     if last_period > max_len * 0.5:
         t = shortened[:last_period + 1]
     else:
         t = shortened.rstrip() + "..."
+    
     return t.strip()
 
-def extract_one(pdf: Path, cfg_path: Path) -> Tuple[str, str]:
-    # ... [existing code bis trim_comparator_block] ...
-    
-    cleaned = trim_comparator_block(sec or "", max_len=max_len)
-    
-    # ✅ NEU: Multi-Layer Validation
-    if cleaned:
-        # Layer 1: NO-GO Check (TISSEEL, LEPTOPROL, HYQVIA)
-        if is_nogo_comparator(cleaned):
-            logger.debug(f"{pdf.name}: Comparator rejected by NO-GO filter")
-            cleaned = ""
-            rule_id = "nogo_comparator_rejected"
-        
-        # Layer 2: Meta-Alternatives Only (TARCEVA)
-        elif is_meta_alternatives_only(cleaned):
-            logger.debug(f"{pdf.name}: Comparator is meta-alternatives only")
-            rule_id = (rule_id or "") + "|meta_alternatives_only"
-            # Optional: Für TARCEVA-Typ verwerfen statt behalten
-            if len(cleaned) < 150:
-                cleaned = ""
-                rule_id = "meta_alternatives_discarded"
-        
-        # Layer 3: Bestehende Validation
-        else:
-            cleaned, comp_status = validate_comparator(cleaned, rule_id or "")
-            if not cleaned:
-                logger.debug(f"{pdf.name}: Comparator rejected: {comp_status}")
-                rule_id = comp_status
-    
-    # ✅ WICHTIG: Bei leerem Comparator jetzt explizit markieren (RYBREVANT Fix)
-    if not cleaned:
-        if not rule_id or rule_id == "":
-            rule_id = "no_comparator_found"
+
+# 5) FALLBACK-FUNKTIONEN
 
 def fallback_no_comparator(full_text: str) -> str:
-    """
-    Spezialfall: 'il n'existe pas de comparateur cliniquement pertinent...'
-    FIX: Apostroph-Varianten ' ' ' vollständig abgedeckt
-    """
+    """Spezialfall: 'il n'existe pas de comparateur'"""
     if not full_text:
         return ""
     t = " ".join(full_text.split())
-    # FIX: [''] deckt jetzt ', ', ' ab
     m = re.search(
         r"il n['']existe pas de comparateur cliniquement pertinent[^.]*\.",
         t,
@@ -286,14 +255,8 @@ def fallback_no_comparator(full_text: str) -> str:
     return ""
 
 
-GENERIC_SENTENCE_PATTERNS = [
-    r"([^.]{0,200}g[ée]n[ée]rique[s]?\s+de\s+la\s+sp[ée]cialit[ée]\s+de\s+référence[^.]*\.)",
-    r"([^.]{0,200}sp[ée]cialit[ée]\s+de\s+référence[^.]*\.)",
-]
-
-
 def fallback_generic_comparator(full_text: str) -> str:
-    """Sucht bei Generika/Hybriden nach einem Satz mit 'spécialité de référence'."""
+    """Sucht bei Generika nach 'spécialité de référence'"""
     if not full_text:
         return ""
     t = " ".join(full_text.split())
@@ -305,33 +268,19 @@ def fallback_generic_comparator(full_text: str) -> str:
 
 
 def fallback_alternative_treatments(full_text: str) -> str:
-    """Sucht Sätze vom Typ 'il existe des alternatives ...'."""
+    """Sucht 'il existe des alternatives'"""
     if not full_text:
         return ""
     t = " ".join(full_text.split())
-    m = re.search(
-        r"il existe des alternatives?[^.]*\.",
-        t,
-        re.I,
-    )
+    m = re.search(r"il existe des alternatives?[^.]*\.", t, re.I)
     if m:
         return m.group(0).strip()
     return ""
 
 
-# FIX: Apostroph-Varianten in allen MED_REF_PATTERNS
-MED_REF_PATTERNS = [
-    r"pas de progrès par rapport au médicament de référence\s*\((?P<ref>[^)]+)\)",
-    r"pas de progrès par rapport aux princeps\s*\((?P<ref>[^)]+)\)",
-    # FIX: Beide Apostrophe n' und d' jetzt mit ['']
-    r"n['']apporte pas d['']amélioration du service médical rendu\s*\(ASMR\s*V\)\s*par rapport à\s*(?P<ref>[^.;]+)",
-]
+# 6) HEURISTIK-FUNKTIONEN
 
-COMPARATOR_SECTION_HEADER = r"Comparateurs?\s+cliniquement\s+pertinents"
-DRUG_NAME_PATTERN = r"\b([A-ZÉÈÎÙÂÔÄÖÜ][A-Z0-9\-]+)\s*\([^)]*\)"
-
-
-def _match_first(text: str, patterns: list[str]) -> str:
+def _match_first(text: str, patterns: list) -> str:
     for pat in patterns:
         m = re.search(pat, text, flags=re.IGNORECASE)
         if not m:
@@ -354,13 +303,7 @@ def _extract_comparator_section(text: str) -> str:
 
 
 def _extract_drug_list(block: str, exclude_prefix: str = "") -> str:
-    """
-    Extrahiert Nennungen wie 'CIFLOX (ciprofloxacine)'.
-    
-    Args:
-        block: Text-Block zum Durchsuchen
-        exclude_prefix: Optional - Medikamentename der ausgeschlossen werden soll
-    """
+    """Extrahiert Medikamentennamen wie 'CIFLOX (ciprofloxacine)'"""
     if not block:
         return ""
     names = re.findall(DRUG_NAME_PATTERN, block)
@@ -377,14 +320,7 @@ def _extract_drug_list(block: str, exclude_prefix: str = "") -> str:
 
 
 def _extract_dci_from_product_name(product_name: str) -> str:
-    """
-    Extrahiert die DCI (Wirkstoffname) aus dem Produktnamen.
-    
-    >>> _extract_dci_from_product_name("NORFLOXACINE_ZENTIVA")
-    'norfloxacine'
-    >>> _extract_dci_from_product_name("CLOMIPRAMINE_MYLAN")
-    'clomipramine'
-    """
+    """Extrahiert DCI aus Produktnamen"""
     m = re.match(r'^([a-zéèêàùâôîûäöü]+)(?:_|\s+)([A-Z]+)', product_name, re.I)
     if m:
         return m.group(1).lower()
@@ -392,12 +328,7 @@ def _extract_dci_from_product_name(product_name: str) -> str:
 
 
 def _enhance_with_generic_alternatives(drugs: str, product_name: str) -> str:
-    """
-    Ergänzt bei Generika automatisch 'Autres spécialités à base de X'.
-    
-    >>> _enhance_with_generic_alternatives("CIFLOX; BACTRIM", "NORFLOXACINE_ZENTIVA")
-    'Autres spécialités à base de norfloxacine; CIFLOX; BACTRIM'
-    """
+    """Ergänzt 'Autres spécialités à base de X' bei Generika"""
     if not drugs:
         return drugs
     
@@ -411,30 +342,20 @@ def _enhance_with_generic_alternatives(drugs: str, product_name: str) -> str:
 
 
 def infer_comparator(text: str, product_name: str = "") -> Tuple[str, str]:
-    """
-    Dokumentspezifische Comparator-Heuristik (Level 2).
-    
-    Args:
-        text: Volltext des PDFs
-        product_name: Name des Produkts (für DCI-Extraktion)
-    """
+    """Dokumentspezifische Comparator-Heuristik"""
     if not text:
         return "", ""
     
     t = " ".join(text.split())
-    t_upper = t.upper()
     t_low = t.lower()
     
-    # 1) Conditions de prescription
     if "conditions de prescription" in t_low:
         return "", "conditions_prescription_no_comp"
     
-    # 2) Generika / Referenzmedikament
     ref = _match_first(t, MED_REF_PATTERNS)
     if ref:
         return ref, "no_progress_vs_ref"
     
-    # 3) CCP-Section auswerten
     block = _extract_comparator_section(t)
     if block:
         dci = _extract_dci_from_product_name(product_name)
@@ -448,21 +369,20 @@ def infer_comparator(text: str, product_name: str = "") -> Tuple[str, str]:
     return "", ""
 
 
+# 7) HAUPTFUNKTION
+
 def extract_one(pdf: Path, cfg_path: Path) -> Tuple[str, str]:
+    """Extrahiert Comparator aus einem PDF"""
     cfg = load_patterns(cfg_path)
     options = cfg.get("options", {})
     target = cfg.get("targets", {}).get("Comparateur", {})
     pats = target.get("patterns", [])
     min_chars = int(target.get("min_chars", MIN_COMPARATOR_CHARS))
-    
-    # Konfigurierbare max_length aus YAML
     max_len = int(target.get("max_length", MAX_COMPARATOR_LENGTH))
     
     raw = read_pdf_text(pdf)
     text = normalize_text(raw)
     blocks = split_by_headings_v3(text, options)
-    
-    # Produktname für DCI-Extraktion
     product_name = pdf.stem
     
     # 1) Standard-Section-Logik
@@ -478,43 +398,52 @@ def extract_one(pdf: Path, cfg_path: Path) -> Tuple[str, str]:
             rule_id = fr or "fallback_patterns"
     
     cleaned = trim_comparator_block(sec or "", max_len=max_len)
+    
+    # 2) Multi-Layer Validation
     if cleaned:
-        cleaned, comp_status = validate_comparator(cleaned, rule_id or "")
-        if not cleaned:
-            logger.debug(f"{pdf.name}: Comparator rejected: {comp_status}")
-            rule_id = comp_status
-
+        if is_nogo_comparator(cleaned):
+            logger.debug(f"{pdf.name}: Comparator rejected by NO-GO filter")
+            cleaned = ""
+            rule_id = "nogo_comparator_rejected"
+        elif is_meta_alternatives_only(cleaned):
+            logger.debug(f"{pdf.name}: Comparator is meta-alternatives only")
+            rule_id = (rule_id or "") + "|meta_alternatives_only"
+            if len(cleaned) < 150:
+                cleaned = ""
+                rule_id = "meta_alternatives_discarded"
+        else:
+            cleaned, comp_status = validate_comparator(cleaned, rule_id or "")
+            if not cleaned:
+                logger.debug(f"{pdf.name}: Comparator rejected: {comp_status}")
+                rule_id = comp_status
+    
     if cleaned and len(cleaned) < MIN_COMPARATOR_CHARS:
         cleaned = ""
         rule_id = ""
     
-    # Inhaltliche Fallbacks
-        if not cleaned:
+    # 3) Inhaltliche Fallbacks
+    if not cleaned:
         no_ccp = fallback_no_comparator(text)
         if no_ccp:
             cleaned = no_ccp
-            rule_id = "no_ccp_fallback"  # ✅ Kein Pipe mehr
+            rule_id = "no_ccp_fallback"
     
-    # ✅ GEÄNDERT: Generische Alternativen als LETZTER Fallback, aber markiert
     if not cleaned:
         gen = fallback_generic_comparator(text)
         if gen:
-            # Nur bei PIS_INS akzeptieren, sonst zu generisch
             if "PIS_INS" in pdf.name.upper() or "PIS_RCP" in pdf.name.upper():
                 cleaned = gen
                 rule_id = "generic_ref|REVIEW_NEEDED"
             else:
-                logger.debug(f"{pdf.name}: Generic ref too vague for {pdf.name}")
+                logger.debug(f"{pdf.name}: Generic ref too vague")
     
-    # ✅ GEÄNDERT: Alternative treatments NUR als Info, nicht als Comparator
     if not cleaned:
         alt = fallback_alternative_treatments(text)
         if alt:
-            # Nicht als Comparator nutzen - zu generisch
-            logger.debug(f"{pdf.name}: Found generic alternatives but discarding (too vague)")
+            logger.debug(f"{pdf.name}: Found generic alternatives but discarding")
             return "", "generic_alternatives_only"
     
-    # 2) Spezialisierte Heuristik mit verbesserter Priorisierung
+    # 4) Spezialisierte Heuristik
     spec_comp, spec_rule = infer_comparator(text, product_name)
     
     if spec_comp:
@@ -522,28 +451,26 @@ def extract_one(pdf: Path, cfg_path: Path) -> Tuple[str, str]:
             cleaned = spec_comp
             rule_id = spec_rule
         elif spec_rule in PRIORITY_RULES:
-            logger.debug(f"{pdf.name}: Using priority rule {spec_rule} over {rule_id}")
+            logger.debug(f"{pdf.name}: Using priority rule {spec_rule}")
             cleaned = spec_comp
             rule_id = spec_rule
         elif len(spec_comp) > len(cleaned):
-            logger.debug(f"{pdf.name}: Using longer spec_comp ({len(spec_comp)} vs {len(cleaned)})")
+            logger.debug(f"{pdf.name}: Using longer spec_comp")
             cleaned = spec_comp
             rule_id = spec_rule
     
-    # Logging
-    if cleaned:
-        logger.debug(f"{pdf.name}: Comparator via {rule_id}, length={len(cleaned)}")
-    else:
-        logger.debug(f"{pdf.name}: No comparator found")
-    if "PIS_RI" in pdf.name.upper():
-        # Nur akzeptieren wenn echte Medikamentennamen enthalten
-        if cleaned:
-            # Check: Hat der Text konkrete Medikamentennamen (CAPS)?
-            drug_mentions = re.findall(r'\b[A-Z][A-Z]{2,}(?:\s+\([^)]+\))?\b', cleaned)
-            if len(drug_mentions) < 2:
-                # Nur generische Sätze - verwerfen
-                logger.debug(f"{pdf.name}: PIS_RI with no specific drug names, discarding")
-                return "", "pis_ri_generic_only"
+    # 5) PIS_RI Validierung (vor finalem Return!)
+    if "PIS_RI" in pdf.name.upper() and cleaned:
+        drug_mentions = re.findall(r'\b[A-Z][A-Z]{2,}\b', cleaned)
+        if len(drug_mentions) < 2:
+            logger.debug(f"{pdf.name}: PIS_RI generic only, discarding")
+            cleaned = ""
+            rule_id = "pis_ri_generic_only"
+    
+    # 6) Bei leerem Comparator markieren
+    if not cleaned:
+        if not rule_id:
+            rule_id = "no_comparator_found"
     
     # Logging
     if cleaned:
