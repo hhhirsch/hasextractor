@@ -318,17 +318,9 @@ def select_best_population_candidate(candidates: list) -> Tuple[str, str]:
     
     return best_text, best_rule
 
-
 def extract_one(pdf: Path, cfg_path: Path, ind_map: Dict[str, str]) -> Tuple[str, str, str, str]:
-    """
-    Extrahiert Population und Subpopulation aus einem PDF.
-    
-    Returns:
-        (population, subpopulation, pop_rule_id, sub_rule_id)
-    """
     cfg = load_patterns(cfg_path)
     options = cfg.get("options", {})
-    
     pop_target = cfg.get("targets", {}).get("Population", {})
     pop_pats = pop_target.get("patterns", [])
     pop_min_chars = int(pop_target.get("min_chars", MIN_POP_CHARS))
@@ -349,47 +341,54 @@ def extract_one(pdf: Path, cfg_path: Path, ind_map: Dict[str, str]) -> Tuple[str
         if pop:
             pop_rule = first_match_rule(text, pop_pats) or "fallback_patterns"
     
+    # ✅ FIX 1: Korrekte Einrückung!
     pop = trim_population_block(pop or "")
-		if pop:
+    if pop:
         pop, pop_status = validate_population_length(pop)
         if not pop:
             logger.debug(f"{pdf.name}: Population rejected: {pop_status}")
             pop_rule = pop_status
     
-    # 2) Fallback aus Indication
-    ind = ind_map.get(doc_id, "")
-    fb_ind = fallback_population_from_indication(ind)
+    # ✅ NEU: Regel D - Epidemiologie abtrennen
+    if pop:
+        pop, _ = clean_population_block_v2(pop)
     
-    # 3) Fallback aus Summary (L'essentiel)
-    fb_summary = fallback_population_from_summary(text)
+    # ✅ NEU: Regel C - Numerik-Check + Fallback auf Indikation
+    if not pop or looks_numeric_only(pop):
+        ind = ind_map.get(doc_id, "")
+        
+        # Fallback 1: aus Indication
+        fb_ind = fallback_population_from_indication(ind)
+        
+        # Fallback 2: aus Summary
+        fb_summary = fallback_population_from_summary(text)
+        
+        # Wähle besten Kandidaten
+        candidates = [
+            (pop, len(pop or ""), 'section', pop_rule),
+            (fb_summary, len(fb_summary or ""), 'summary', 'from_summary'),
+            (fb_ind, len(fb_ind or ""), 'indication', 'from_indication'),
+        ]
+        
+        pop, pop_rule = select_best_population_candidate(candidates)
     
-    # 4) Wähle besten Kandidaten
-    candidates = [
-        (pop, len(pop), 'section', pop_rule),
-        (fb_summary, len(fb_summary), 'summary', 'from_summary'),
-        (fb_ind, len(fb_ind), 'indication', 'from_indication'),
-    ]
-    
-    pop, pop_rule = select_best_population_candidate(candidates)
-    
-    # 5) Subpopulation-Extraktion
-    sub = infer_sub_from_population(pop) if pop else ""
+    # 5) Subpopulation (nur wenn Population valide)
+    sub = ""
     sub_rule = ""
     
-    if sub:
-        sub = validate_and_trim_subpopulation(sub, pop)
+    if pop and len(pop) >= MIN_POP_CHARS:
+        sub = infer_sub_from_population(pop)
         if sub:
-            sub_rule = "inferred"
-            logger.debug(f"{pdf.name}: Subpopulation extracted (length={len(sub)})")
-    
-    # Logging
-    if pop:
-        logger.debug(f"{pdf.name}: Population via {pop_rule}, length={len(pop)}")
-    else:
-        logger.debug(f"{pdf.name}: No population found")
+            # ✅ Duplikate-Check (ADENURIC Fix)
+            if sub.strip() == pop.strip():
+                logger.debug(f"{pdf.name}: Subpopulation identical to population, discarding")
+                sub = ""
+            else:
+                sub = validate_and_trim_subpopulation(sub, pop)
+                if sub:
+                    sub_rule = "inferred"
     
     return pop or "", sub or "", pop_rule or "", sub_rule or ""
-
 
 def main() -> None:
     # FIX: Alte CLI-Signatur wiederhergestellt
