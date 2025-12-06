@@ -79,11 +79,29 @@ Comparateur:
   min_chars: 80
   max_length: 1000
   patterns:
-    - "(?mi)^(?:\\d{1,2}[\\. \\t]*)?COMPARATEURS?\\s+CLINIQUEMENT\\s+PERTINENTS\\b"
-    - "(?mi)^(?:\\d{1,2}[\\. \\t]*)?COMPARATEURS?\\b"
-    - "(?mi)^(?:\\d{1,2}[\\. \\t]*)?M[ÉE]DICAMENTS?\\s+DE\\s+COMPARAISON\\b"
-    - "(?mi)\\bcomparateurs?\\s+cliniquement\\s+pertinents?\\b"
-
+    # Primär: Kapitel 07 COMPARATEURS (höchste Qualität)
+    - rule_id: comparateurs_07_block
+      start: '(?mi)^\s*(?:0?7|7[\s.)\]]*)\s*COMPARATEURS?\s+CLINIQUEMENT\s+PERTINENTS?'
+      end: '(?mi)^\s*(?:0?8|8[\s.)\]]*)\s*(?:INFORMATIONS?\s+SUR\s+LE\s+MEDICAMENT|PLACE\s+DANS\s+LA\s+STRAT[ÉE]GIE|SERVICE\s+M[ÉE]DICAL|SMR)'
+      min_chars: 150
+    
+    # Variante: TRAITEMENTS DE RÉFÉRENCE (PIC_EI neu)
+    - rule_id: traitements_reference_block
+      start: '(?mi)^\s*(?:0?7|7[\s.)\]]*)\s*TRAITEMENTS?\s+DE\s+R[ÉE]F[ÉE]RENCE'
+      end: '(?mi)^\s*(?:0?8|8[\s.)\]]*)'
+      min_chars: 100
+    
+    # Fallback: Fließtext-Passage mit "comparateurs cliniquement pertinents"
+    - rule_id: comparateurs_freetext
+      start: '(?i)comparateurs?\s+cliniquement\s+pertinents?'
+      end: '(?mi)^\s*(?:[A-Z]{4,}|CONCLUSION|Les\s+comparateurs)'
+      min_chars: 80
+    
+    # Fallback 2: "Traitement de référence" im Text
+    - rule_id: traitement_reference_freetext
+      start: '(?i)traitement(?:s)?\s+de\s+r[ée]f[ée]rence'
+      end: '(?mi)^\s*[A-Z]{4,}'
+      min_chars: 60
 
 Synthese:
   min_chars: 150
