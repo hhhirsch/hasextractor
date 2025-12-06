@@ -86,12 +86,6 @@ def validate_population_length(text: str) -> Tuple[str, str]:
     
     return text.strip(), "ok"
 
-# In extract_one() nach Standard-Extraktion einfügen:
-cleaned, status = validate_population_length(sec or "")
-if not cleaned:
-    return "", status
-
-
 # Erweiterte Keep-Patterns für kurze aber wichtige Population-Aussagen
 SHORT_POP_KEEP = [
     r"population cible ne peut pas être estimée",
@@ -317,6 +311,37 @@ def select_best_population_candidate(candidates: list) -> Tuple[str, str]:
     logger.debug(f"Selected population from {best_source} (length={best_len})")
     
     return best_text, best_rule
+
+def clean_population_block_v2(text: str) -> Tuple[str, str]:
+    """Trennt klinische Population von Epidemiologie"""
+    if not text:
+        return "", ""
+    
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    epidemio_markers = [
+        r"(?i)^Selon\s+(?:l['']Agence|les\s+données)",
+        r"(?i)^La\s+pr[ée]valence",
+        r"(?i)\best\s+estim[ée]e?\s+[àa].*\d+",
+    ]
+    
+    clean_sentences = []
+    for sent in sentences:
+        if any(re.search(pat, sent) for pat in epidemio_markers):
+            break
+        if re.search(r"(?i)\b(?:patients?|adultes?|enfants?|atteints?)\b", sent):
+            clean_sentences.append(sent)
+    
+    return ' '.join(clean_sentences).strip(), ""
+
+def looks_numeric_only(text: str) -> bool:
+    """Prüft ob nur Zahlen, keine klinische Definition"""
+    if not text or len(text) < 20:
+        return True
+    if len(re.findall(r'\d+', text)) > 3 and len(text) < 200:
+        return True
+    if not re.search(r"(?i)\b(?:patients?|atteints?|adultes?)\b", text):
+        return True
+    return False
 
 def extract_one(pdf: Path, cfg_path: Path, ind_map: Dict[str, str]) -> Tuple[str, str, str, str]:
     cfg = load_patterns(cfg_path)
