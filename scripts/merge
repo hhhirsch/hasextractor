@@ -202,7 +202,7 @@ def main():
     merged['Comparator_clean'] = merged.apply(clean_comparator, axis=1)
     merged['synthese_quality'] = merged.apply(flag_synthese_quality, axis=1)
 
-    # Spaltenreihenfolge
+    # Spaltenreihenfolge (Fortsetzung von Zeile 243)
     cols = [
         "file", "doc_name", "ct_number", "product_name",
         "Indication", "Population", "Subpopulation",
@@ -210,36 +210,37 @@ def main():
         "Synthese", "synthese_quality",
     ]
     other = [c for c in merged.columns if c not in cols]
-    merged = merged[cols + other]
-
-    # QC-Counts
-    total = len(merged)
-    counts = {
-        "total_rows": total,
-        "Indication_nonempty": int(is_nonempty_series(merged.get("Indication", pd.Series(dtype=str))).sum()),
-        "Population_nonempty": int(is_nonempty_series(merged.get("Population", pd.Series(dtype=str))).sum()),
-        "Subpopulation_nonempty": int(is_nonempty_series(merged.get("Subpopulation", pd.Series(dtype=str))).sum()),
-        "Comparator_nonempty": int(is_nonempty_series(merged.get("Comparator", pd.Series(dtype=str))).sum()),
-        "Comparator_clean_nonempty": int(is_nonempty_series(merged.get("Comparator_clean", pd.Series(dtype=str))).sum()),
-        "Synthese_nonempty": int(is_nonempty_series(merged.get("Synthese", pd.Series(dtype=str))).sum()),
-        "Synthese_quality_good": int((merged.get("synthese_quality", pd.Series(dtype=str)) == 'good').sum()),
-    }
-
-    print("\n=== Merge Summary ===")
-    for k, v in counts.items():
-        print(f"{k:>30s}: {v}")
+    final_cols = cols + other
+    merged = merged[final_cols]
 
     # Illegale Excel-Zeichen entfernen
-    merged = merged.applymap(strip_illegal_excel_chars)
+    for col in merged.columns:
+        if merged[col].dtype == object:
+            merged[col] = merged[col].apply(strip_illegal_excel_chars)
+
+    # Sortierung
+    merged.sort_values(by=["ct_number", "product_name", "doc_name"], inplace=True, na_position='last')
 
     # Excel schreiben
     out_xlsx.parent.mkdir(parents=True, exist_ok=True)
-    with pd.ExcelWriter(out_xlsx, engine="openpyxl") as writer:
-        merged.to_excel(writer, index=False, sheet_name="HAS_extraktionen")
-        pd.DataFrame([counts]).to_excel(writer, index=False, sheet_name="summary")
-
-    print(f"\nExcel geschrieben nach: {out_xlsx}")
-
+    merged.to_excel(out_xlsx, index=False, engine="openpyxl")
+    
+    print(f"✅ Excel erstellt: {out_xlsx}")
+    print(f"   Zeilen: {len(merged)}")
+    print(f"   Spalten: {len(merged.columns)}")
+    
+    # Quality-Statistik
+    if 'comparator_quality' in merged.columns:
+        comp_stats = merged['comparator_quality'].value_counts()
+        print("\n📊 Comparator Quality:")
+        for quality, count in comp_stats.items():
+            print(f"   {quality}: {count}")
+    
+    if 'synthese_quality' in merged.columns:
+        syn_stats = merged['synthese_quality'].value_counts()
+        print("\n📊 Synthese Quality:")
+        for quality, count in syn_stats.items():
+            print(f"   {quality}: {count}")
 
 if __name__ == "__main__":
     main()
