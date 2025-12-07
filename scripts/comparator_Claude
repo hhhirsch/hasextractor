@@ -478,7 +478,6 @@ def extract_one(pdf: Path, cfg: dict) -> Tuple[str, str]:
     
     return cleaned or "", (rule_id or "")
 
-
 def main() -> None:
     if len(sys.argv) < 4:
         print("Usage: python extract_comparator.py <pdf_or_dir> <out_csv> <patterns_yaml>")
@@ -487,25 +486,27 @@ def main() -> None:
     src = Path(sys.argv[1])
     out = Path(sys.argv[2])
     yaml_cfg = Path(sys.argv[3])
+    
+    # YAML einmal laden (Performance-Fix)
     cfg = load_patterns(yaml_cfg)
     logger.info("YAML patterns loaded once")
-    # In der Loop ändern:
-    for idx, pdf in enumerate(pdfs, start=1):
-        try:
-            txt, rule_id = extract_one(pdf, cfg)  # cfg statt yaml_cfg!
-
     
+    # PDFs auflisten
     pdfs = list(iter_pdfs(src))
     start_signal("extract_comparator", len(pdfs))
     
     rows = []
+    
+    # EINE Loop mit cfg
     for idx, pdf in enumerate(pdfs, start=1):
         try:
-            txt, rule_id = extract_one(pdf, yaml_cfg)
+            txt, rule_id = extract_one(pdf, cfg)  # ← cfg, nicht yaml_cfg!
+            
             if txt is None:
                 txt = ""
             if rule_id is None:
                 rule_id = ""
+            
             rows.append([
                 str(pdf),
                 "comparator",
@@ -515,7 +516,7 @@ def main() -> None:
                 rule_id,
             ])
         except Exception as e:
-            logger.error(f"Error processing {pdf.name}: {type(e).__name__} - {str(e)}")
+            logger.error(f"Error processing {pdf.name}: {type(e).__name__} - {str(e)}", exc_info=True)
             rows.append([
                 str(pdf),
                 "comparator",
@@ -536,7 +537,6 @@ def main() -> None:
         w.writerows(rows)
     
     logger.info(f"Processed {len(pdfs)} PDFs, saved to {out}")
-
 
 if __name__ == "__main__":
     main()
