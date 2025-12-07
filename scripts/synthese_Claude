@@ -249,18 +249,6 @@ def main() -> None:
         w.writerows(rows)
     
     logger.info(f"Processed {len(pdfs)} PDFs, saved to {out}")
-    
-    print()
-    end_signal("extract_synthese")
-    
-    out.parent.mkdir(parents=True, exist_ok=True)
-    with out.open("w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f, delimiter=";")
-        w.writerow(["file", "field", "text", "doc_id", "pattern_version", "rule_id"])
-        w.writerows(rows)
-    
-    logger.info(f"Processed {len(pdfs)} PDFs, saved to {out}")
-
 
 if __name__ == "__main__":
     main()
