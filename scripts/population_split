@@ -158,24 +158,31 @@ def trim_population_block(text: str) -> str:
     return text.strip()
 
 
+def _normalize_apostrophes(s: str) -> str:
+    """Normalisiert verschiedene Apostroph-Varianten aus PDFs."""
+    return s.replace("'", "'").replace("`", "'").replace("'", "'")
+
 def fallback_population_from_indication(ind_text: str) -> str:
-    """Fallback: Extrahiert Population-Infos aus Indication."""
+    """Fallback: Extrahiert Population-Infos aus Indication (robust für Akzente)."""
     if not ind_text or len(ind_text) < 50:
         return ""
     
+    # Apostroph-Normalisierung + Whitespace
+    text = " ".join(ind_text.split())
+    text = _normalize_apostrophes(text)  # Nur EINMAL!
+    
     patterns = [
-        r"chez les (?:adultes|patients|enfants)[^.]{10,200}\.",
-        r"(?:adultes?|patients?|enfants?)[^.]{10,150}âgés? de[^.]{10,100}\.",
-        r"patients?[^.]{10,150}atteints? de[^.]{10,150}\.",
+        r"chez les (?:adultes?|patients?|enfants?)[^.]{10,300}\.",
+        r"(?:adultes?|patients?|enfants?)[^.]{10,250}[aâ]g[ée]s?\s+de[^.]{10,200}\.",
+        r"patients?[^.]{10,250}atteints?\s+de[^.]{10,250}\.",
     ]
     
     for pat in patterns:
-        m = re.search(pat, ind_text, flags=re.I)
+        m = re.search(pat, text, flags=re.I)
         if m:
             return m.group(0).strip()
     
     return ""
-
 
 def fallback_population_from_summary(full_text: str) -> str:
     """
@@ -190,7 +197,7 @@ def fallback_population_from_summary(full_text: str) -> str:
     
     # FIX: Duplikate entfernt
     window = ""
-    for anchor in ["l'essentiel", "synthèse de l'avis"]:
+    for anchor in ["l'essentiel", "lessentiel", "synthèse de l'avis", "synthese de l'avis"]:
         idx = low.find(anchor)
         if idx != -1:
             window = t[idx : idx + 800]
@@ -239,6 +246,22 @@ def infer_sub_from_population(pop_text: str) -> str:
                 end = min(len(pop_text), match.end() + 200)
                 snippet = pop_text[start:end].strip()
                 
+                # Satzbasiertes Filtern
+                sentences = re.split(r'(?<=[.!?])\s+', snippet)
+                relevant = [
+                    s for s in sentences
+                    if re.search(
+                        r"(sous[-\s]?population|sous[-\s]?groupe|formes?\s+s[ée]v[èe]res?|patients?\s+en\s+[ée]chec)",
+                        s, flags=re.I
+                    )
+                ]
+                
+                if relevant:
+                    clean_snippet = " ".join(relevant).strip()
+                    if len(clean_snippet) >= MIN_SUBPOP_CHARS:
+                        return clean_snippet
+                
+                # Fallback: Original wenn nichts relevantes
                 if len(snippet) >= MIN_SUBPOP_CHARS:
                     return snippet
     
@@ -334,13 +357,28 @@ def clean_population_block_v2(text: str) -> Tuple[str, str]:
     return ' '.join(clean_sentences).strip(), ""
 
 def looks_numeric_only(text: str) -> bool:
-    """Prüft ob nur Zahlen, keine klinische Definition"""
-    if not text or len(text) < 20:
+    """Erkennt reine Epidemiologie/Zahlenblöcke, nicht klinische Populationen"""
+    if not text:
         return True
-    if len(re.findall(r'\d+', text)) > 3 and len(text) < 200:
+    
+    t = text.strip()
+    if len(t) < 20:
         return True
-    if not re.search(r"(?i)\b(?:patients?|atteints?|adultes?)\b", text):
+    
+    # Prüfe auf klinische Schlüsselwörter
+    has_clinical = re.search(
+        r"(?i)\b(patients?|atteints?|adultes?|enfants?|personnes|traitement|maladie)\b", 
+        t
+    ) is not None
+    
+    # Zähle Zahlen
+    digit_count = len(re.findall(r'\d+', t))
+    
+    # Nur WIRKLICH zahlenlastige Texte ohne klinische Begriffe verwerfen
+    if digit_count >= 5 and len(t) < 250 and not has_clinical:
+        logger.debug(f"Rejected as numeric-only: {t[:80]}...")
         return True
+    
     return False
 
 def extract_one(pdf: Path, cfg: dict, ind_map: Dict[str, str]) -> Tuple[str, str, str, str]:
@@ -397,21 +435,38 @@ def extract_one(pdf: Path, cfg: dict, ind_map: Dict[str, str]) -> Tuple[str, str
         
         pop, pop_rule = select_best_population_candidate(candidates)
     
-    # 5) Subpopulation (nur wenn Population valide)
+    # 5) Subpopulation - NEUE zweistufige Extraktion
     sub = ""
     sub_rule = ""
     
     if pop and len(pop) >= MIN_POP_CHARS:
-        sub = infer_sub_from_population(pop)
-        if sub:
-            # ✅ Duplikate-Check (ADENURIC Fix)
-            if sub.strip() == pop.strip():
-                logger.debug(f"{pdf.name}: Subpopulation identical to population, discarding")
-                sub = ""
-            else:
-                sub = validate_and_trim_subpopulation(sub, pop)
+        # STUFE 1: Versuche explizite Subpopulation-Section aus YAML
+        sub_target = cfg.get("targets", {}).get("Subpopulation", {})
+        sub_pats = sub_target.get("patterns", [])
+        
+        if sub_pats:
+            sub_sec, sub_r = _safe_section_and_rule(
+                find_section_with_rule(blocks, sub_pats, min_chars=20)
+            )
+            
+            if sub_sec:
+                sub = validate_and_trim_subpopulation(sub_sec, pop)
                 if sub:
-                    sub_rule = "inferred"
+                    sub_rule = sub_r or "subpopulation_section"
+                    logger.debug(f"{pdf.name}: Explicit subpopulation found")
+        
+        # STUFE 2: Fallback auf Heuristik aus Population
+        if not sub:
+            sub = infer_sub_from_population(pop)
+            if sub:
+                # Duplikate-Check
+                if sub.strip() == pop.strip():
+                    logger.debug(f"{pdf.name}: Subpopulation identical to population, discarding")
+                    sub = ""
+                else:
+                    sub = validate_and_trim_subpopulation(sub, pop)
+                    if sub:
+                        sub_rule = "inferred"
     
     return pop or "", sub or "", pop_rule or "", sub_rule or ""
 
@@ -487,7 +542,6 @@ def main() -> None:
         w.writerows(rows)
     
     logger.info(f"Processed {len(pdfs)} PDFs, saved to {out}")
-
 
 if __name__ == "__main__":
     main()
