@@ -371,9 +371,7 @@ def infer_comparator(text: str, product_name: str = "") -> Tuple[str, str]:
 
 # 7) HAUPTFUNKTION
 
-def extract_one(pdf: Path, cfg_path: Path) -> Tuple[str, str]:
-    """Extrahiert Comparator aus einem PDF"""
-    cfg = load_patterns(cfg_path)
+def extract_one(pdf: Path, cfg: dict) -> Tuple[str, str]:
     options = cfg.get("options", {})
     target = cfg.get("targets", {}).get("Comparateur", {})
     pats = target.get("patterns", [])
@@ -489,6 +487,13 @@ def main() -> None:
     src = Path(sys.argv[1])
     out = Path(sys.argv[2])
     yaml_cfg = Path(sys.argv[3])
+    cfg = load_patterns(yaml_cfg)
+    logger.info("YAML patterns loaded once")
+    # In der Loop ändern:
+    for idx, pdf in enumerate(pdfs, start=1):
+        try:
+            txt, rule_id = extract_one(pdf, cfg)  # cfg statt yaml_cfg!
+
     
     pdfs = list(iter_pdfs(src))
     start_signal("extract_comparator", len(pdfs))
