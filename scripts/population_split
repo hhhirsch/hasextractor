@@ -343,7 +343,7 @@ def looks_numeric_only(text: str) -> bool:
         return True
     return False
 
-def extract_one(pdf: Path, cfg_path: Path, ind_map: Dict[str, str]) -> Tuple[str, str, str, str]:
+def extract_one(pdf: Path, cfg: dict) -> Tuple[str, str]:
     cfg = load_patterns(cfg_path)
     options = cfg.get("options", {})
     pop_target = cfg.get("targets", {}).get("Population", {})
@@ -424,6 +424,12 @@ def main() -> None:
     src = Path(sys.argv[1])
     out = Path(sys.argv[2])
     yaml_cfg = Path(sys.argv[3])
+    cfg = load_patterns(yaml_cfg)
+    logger.info("YAML patterns loaded once")
+    for idx, pdf in enumerate(pdfs, start=1):
+        try:
+            txt, rule_id = extract_one(pdf, cfg)  # cfg statt yaml_cfg!
+
     ind_csv_path = Path(sys.argv[4])
     
     # Lade Indication-Map
