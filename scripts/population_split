@@ -343,8 +343,8 @@ def looks_numeric_only(text: str) -> bool:
         return True
     return False
 
-def extract_one(pdf: Path, cfg: dict) -> Tuple[str, str]:
-    cfg = load_patterns(cfg_path)
+def extract_one(pdf: Path, cfg: dict, ind_map: Dict[str, str]) -> Tuple[str, str, str, str]:
+    """Extrahiert Population + Subpopulation aus einem PDF."""
     options = cfg.get("options", {})
     pop_target = cfg.get("targets", {}).get("Population", {})
     pop_pats = pop_target.get("patterns", [])
@@ -416,7 +416,6 @@ def extract_one(pdf: Path, cfg: dict) -> Tuple[str, str]:
     return pop or "", sub or "", pop_rule or "", sub_rule or ""
 
 def main() -> None:
-    # FIX: Alte CLI-Signatur wiederhergestellt
     if len(sys.argv) < 5:
         print("Usage: python extract_population_split.py <pdf_or_dir> <out_csv> <patterns_yaml> <indication_csv>")
         sys.exit(1)
@@ -424,12 +423,6 @@ def main() -> None:
     src = Path(sys.argv[1])
     out = Path(sys.argv[2])
     yaml_cfg = Path(sys.argv[3])
-    cfg = load_patterns(yaml_cfg)
-    logger.info("YAML patterns loaded once")
-    for idx, pdf in enumerate(pdfs, start=1):
-        try:
-            txt, rule_id = extract_one(pdf, cfg)  # cfg statt yaml_cfg!
-
     ind_csv_path = Path(sys.argv[4])
     
     # Lade Indication-Map
@@ -441,6 +434,10 @@ def main() -> None:
                 ind_map[row.get("doc_id", "")] = row.get("text", "")
         logger.info(f"Loaded {len(ind_map)} indications for fallback")
     
+    # YAML einmal laden (Performance-Fix)
+    cfg = load_patterns(yaml_cfg)
+    logger.info("YAML patterns loaded once")
+    
     pdfs = list(iter_pdfs(src))
     start_signal("extract_population_split", len(pdfs))
     
@@ -448,11 +445,11 @@ def main() -> None:
     
     for idx, pdf in enumerate(pdfs, start=1):
         try:
-            pop_txt, sub_txt, pop_rule, sub_rule = extract_one(pdf, yaml_cfg, ind_map)
+            # ✅ KORREKT: cfg und ind_map übergeben, 4 Werte empfangen
+            pop_txt, sub_txt, pop_rule, sub_rule = extract_one(pdf, cfg, ind_map)
             
             doc_id = make_doc_id(str(pdf))
             
-            # ALTES FORMAT: Beide in einer Zeile
             rows.append([
                 str(pdf),
                 doc_id,
@@ -464,7 +461,7 @@ def main() -> None:
             ])
             
         except Exception as e:
-            logger.error(f"Error processing {pdf.name}: {type(e).__name__} - {str(e)}")
+            logger.error(f"Error processing {pdf.name}: {type(e).__name__} - {str(e)}", exc_info=True)
             doc_id = make_doc_id(str(pdf))
             
             rows.append([
@@ -478,7 +475,7 @@ def main() -> None:
             ])
         
         progress_bar(idx, len(pdfs), prefix="Population ")
-    
+
     print()
     end_signal("extract_population_split")
     
