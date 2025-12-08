@@ -1,0 +1,295 @@
+# shared_utils.py (fixed)
+import re, unicodedata
+from pathlib import Path
+from typing import List, Tuple, Optional, Dict, Any
+import yaml
+
+try:
+    from pdfminer.high_level import extract_text as _extract_text_pdfminer
+except Exception as e:
+    raise SystemExit("pdfminer.six ist nicht installiert. Bitte ausführen: py -m pip install pdfminer.six") from e
+
+def load_patterns(yaml_path: str | Path) -> dict:
+    with open(yaml_path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+def normalize_text(text: str) -> str:
+    """
+    Vereinheitlicht PDF-Text:
+    - versucht kaputtes Latin1/UTF-8-Encoding zu reparieren (Â«, indiquÃ©, etc.)
+    - Unicode-Normalisierung
+    - geschützte / komische Leerzeichen -> normales Space
+    - Trennstriche am Zeilenende entfernen
+    - weiche Umbrüche in laufenden Text umwandeln
+    - grobes „Entstückeln“ von kaputten Überschriften (Indication concernée etc.)
+    - überflüssige Leerzeilen/Spaces reduzieren
+    """
+    if not text:
+        return text
+
+    # 1) Heuristik: kaputte Latin1/UTF-8-Sequenzen reparieren
+    if "Ã" in text or "Â" in text or "â" in text:
+        try:
+            fixed = text.encode("latin1", errors="ignore").decode("utf-8", errors="ignore")
+
+            def score_french(s: str) -> int:
+                return sum(s.count(ch) for ch in "éèàùôîûçÉÈÀÙÔÎÛÇ")
+
+            if score_french(fixed) >= score_french(text):
+                text = fixed
+        except Exception:
+            pass
+
+    # 2) Unicode normalisieren (NFKC = kompakt & kompatibel)
+    t = unicodedata.normalize("NFKC", text)
+
+    # 3) versch. Leerzeichen -> normales Space
+    t = t.replace("\u00A0", " ")  # NBSP
+    t = t.replace("\u202F", " ")  # schmales Space
+    t = t.replace("\u2009", " ")  # thin space
+
+    # 4) französische Anführungszeichen angleichen
+    t = t.replace("«", '"').replace("»", '"')
+
+    # 5) Apostrophe/Anführungszeichen normalisieren
+    t = t.replace("’", "'").replace("‘", "'")
+    t = t.replace("“", '"').replace("”", '"')
+
+    # 6) Silbentrennungen am Zeilenende: "glycémi-\nque" -> "glycémique"
+    t = re.sub(r"-\s*\n\s*", "", t)
+
+    # 7) "weiche" Zeilenumbrüche in Fließtext → Space
+    t = re.sub(r"(?<=\w)\s*\n\s*(?=\w)", " ", t)
+
+    # 8) Broken Headings reparieren (v.a. "Indication concernée")
+    #    z.B. "Indication\nconcern\nee" -> "Indication concernée"
+    #    Wir fügen nur wieder zusammen, Akzente bleiben wie sie sind/fehlen.
+    t = re.sub(
+        r"(?i)\b(Indication|Indications?)\s*\n\s*(concern\S*)",
+        r"\1 \2",
+        t
+    )
+    # manchmal steckt "concern" + Rest noch weiter unten
+    t = re.sub(
+        r"(?i)\b(Indication|Indications?)\s*\n\s*(concerne?e?)",
+        r"\1 \2",
+        t
+    )
+
+    # 9) Doppelte Leerzeichen reduzieren
+    t = re.sub(r"[ \t]{2,}", " ", t)
+
+    # 10) Mehrfache leere Zeilen auf max. 2
+    t = re.sub(r"\n{3,}", "\n\n", t)
+
+    return t
+
+def read_pdf_text(path: Path) -> str:
+    return _extract_text_pdfminer(str(path))
+
+def _compile(pat: str):
+    return re.compile(pat, re.I | re.M)
+
+def split_by_headings_v3(text: str, options: Dict[str, Any]) -> List[Tuple[str, str]]:
+    start_pat = _compile(options.get("start_heading", r"(?!)"))
+    lines = text.splitlines()
+    idxs = [i for i, ln in enumerate(lines) if start_pat.search(ln)]
+    blocks: List[Tuple[str, str]] = []
+    for j, i in enumerate(idxs):
+        head = lines[i].strip()
+        start = i + 1
+        end = idxs[j+1] if j+1 < len(idxs) else len(lines)
+        body = "\n".join(ln.strip() for ln in lines[start:end]).strip()
+        blocks.append((head, body))
+    return blocks
+
+def find_section_with_rule(blocks, target_patterns: list[str], min_chars: int = 40):
+    """
+    Sucht einen Abschnitt, dessen Überschrift ODER Body zu einem der target_patterns passt.
+    Gibt (body_text, rule_id) zurück.
+    rule_id = 'pat_<index>' der zuerst passenden Regex.
+    """
+    import re
+
+    for head, body in blocks:
+        head_str = head or ""
+        body_str = body or ""
+        for i, pat in enumerate(target_patterns):
+            rx = re.compile(pat, re.I | re.M)
+            if rx.search(head_str) or rx.search(body_str):
+                rid = f"pat_{i+1}"
+                cand = body_str.strip()
+                if len(cand) >= min_chars:
+                    return cand, rid
+                if cand:
+                    return cand, rid
+    return None, None
+
+def fallback_extract(text: str, target_patterns: List[str], window: int = 1400) -> Optional[str]:
+    for pat in target_patterns:
+        m = re.search(pat, text, re.I | re.M)
+        if m:
+            start = max(0, m.start())
+            end = min(len(text), start + window)
+            return text[start:end].strip()
+    return None
+
+def iter_pdfs(input_path: Path):
+    if input_path.is_dir():
+        yield from sorted(input_path.glob("**/*.pdf"))
+    else:
+        yield input_path
+
+def write_csv(rows, out: Path):
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", newline="", encoding="utf-8") as f:
+        import csv
+        w = csv.writer(f, delimiter=";")
+        w.writerow(["file", "field", "text"])
+        for r in rows:
+            w.writerow(r)
+
+import hashlib, os, sys, shutil, time
+from datetime import datetime
+
+import re
+
+INDICATION_NOISE_LINES = [
+    r"^sécurité\s+sociale",
+    r"^collectivités?",
+    r"^csp\s+l\.?\s*5123-2",
+    r"^has\s*-\s*direction\s+de\s+l[’']evaluation",
+    r"^has\s*-\s*direction\s+de\s+l[’']Évaluation",
+    r"^avis\s+(définitif|[0-9]+/[0-9]+)",
+    r"^\d+/\d+$",                 # nackte Seitenangaben
+    r"^page\s+\d+/\d+",
+    r"^\*+\s*$",
+]
+
+def clean_indication_block(text: str) -> str:
+    """
+    Entfernt typische Kopf-/Fußzeilen und offensichtlichen Müll
+    aus einem bereits extrahierten Indikationsblock.
+    """
+    if not text:
+        return text
+
+    lines = text.splitlines()
+    cleaned_lines = []
+    for ln in lines:
+        stripped = ln.strip()
+
+        # sehr kurze Einzelworte, die häufig Müll sind
+        if len(stripped) <= 2:
+            continue
+
+        # typische Müll-Zeilen nach Liste oben filtern
+        lower = stripped.lower()
+        if any(re.match(pat, lower) for pat in INDICATION_NOISE_LINES):
+            continue
+
+        cleaned_lines.append(ln)
+
+    # am Ende noch doppelte Leerzeilen reduzieren
+    joined = "\n".join(cleaned_lines)
+    joined = re.sub(r"\n{3,}", "\n\n", joined).strip()
+    return joined
+
+def make_doc_id(file_path: str) -> str:
+    try:
+        size = os.path.getsize(file_path)
+    except OSError:
+        size = 0
+    h = hashlib.sha1((file_path + "::" + str(size)).encode("utf-8"), usedforsecurity=False)
+    return h.hexdigest()[:12]  # kurz & stabil
+
+def first_match_rule(text: str, patterns: list[str]) -> str | None:
+    """Gibt die erste Pattern-Regex zurück, die matcht (als einfache rule_id)."""
+    import re
+    for i, pat in enumerate(patterns):
+        if re.search(pat, text, re.I | re.M):
+            return f"pat_{i+1}"
+    return None
+
+def detect_document_type(text: str) -> str:
+    """
+    Erkennt grob den Typ des HAS-Dokuments anhand der ersten ~2000 Zeichen.
+    """
+    if not text:
+        return "unknown"
+
+    first = text[:2000].lower()
+
+    if "conditions de prescription" in first:
+        return "conditions"
+    if "réévaluation" in first:
+        return "reevaluation"
+    if "extension d'indication" in first or "extension d’" in first:
+        return "extension"
+    if "complément de gamme" in first:
+        return "complement"
+
+    return "standard"
+
+def detect_cpd_document(text: str) -> bool:
+    """
+    Spezifischer CPD-Check (für TRELEGY/ELEBRATO etc.).
+    """
+    if not text:
+        return False
+    low = text.lower()
+    head = low[:4000]
+    return "conditions de prescription" in head or "conditions de prise en charge" in head
+
+
+def synthese_from_cpd(text: str) -> str:
+    """
+    Holt bei CPD-Dokumenten eine 'Synthese' aus dem Abschnitt L'ESSENTIEL
+    (gilt v.a. für CT-19965 / TRELEGY).
+    """
+    if not text:
+        return ""
+
+    import re
+    # Wir suchen L'ESSENTIEL und nehmen danach 300–1500 Zeichen als Synthese
+    m = re.search(r"(?mi)L['’]ESSENTIEL(.{300,1500})", text, re.S)
+    if not m:
+        return ""
+
+    body = m.group(1).strip()
+    synth = "L'ESSENTIEL" + "\n" + body
+
+    # grob auf 1500 Zeichen beschränken, an Satzende schneiden
+    if len(synth) > 1500:
+        shortened = synth[:1500]
+        last_dot = shortened.rfind(".")
+        if last_dot > 800:
+            synth = shortened[:last_dot + 1]
+        else:
+            synth = shortened + "..."
+
+    return synth.strip()
+
+
+# --- Start-/Endsignal + Fortschrittsbalken ---
+def start_signal(job_name: str, total: int):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"\n=== {job_name} gestartet @ {ts} ===")
+    print(f"Anzahl PDFs: {total}")
+    try:
+        print('\a', end='', flush=True)  # akustisches Signal (Beep)
+    except Exception:
+        pass
+
+def progress_bar(i: int, total: int, width: int = 30, prefix: str = ""):
+    if total <= 0: total = 1
+    pct = int(i * 100 / total)
+    filled = int(width * pct / 100)
+    bar = "#" * filled + "-" * (width - filled)
+    msg = f"\r{prefix}[{bar}] {pct:3d}%  ({i}/{total})"
+    print(msg, end='', flush=True)
+
+def end_signal(job_name: str):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"\n=== {job_name} fertig @ {ts} ===\n")
+
