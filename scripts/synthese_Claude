@@ -130,68 +130,65 @@ def _safe_section_and_rule(result) -> Tuple[str, str]:
 
 def extract_one(pdf: Path, cfg: dict) -> Tuple[str, str]:
     options = cfg.get("options", {})
-    target = cfg.get("targets", {}).get("Synthese", {})
-    pats = target.get("patterns", [])
-    min_chars = int(target.get("min_chars", MIN_SYN_CHARS))
-    
+    target = cfg.get("targets", {}).get("Synthese", {}) or {}
+    pats = target.get("patterns", []) or []
+    # min_chars aus YAML nur für die Pattern-Suche, nicht als Hartfilter
+    min_chars = int(target.get("min_chars", 80))
+
     raw = read_pdf_text(pdf)
     text = normalize_text(raw)
-    
-    # ===================================================================
-    # STUFE 1: STANDARD-EXTRAKTION (deckt 95% der Fälle ab!)
-    # ===================================================================
+
     blocks = split_by_headings_v3(text, options)
-    
+
+    # 1) Standard-Extraktion
     sec, rule_id = _safe_section_and_rule(
         find_section_with_rule(blocks, pats, min_chars=min_chars)
     )
-    
-    # Fallback: Fließtext-Suche
-    if not sec:
-        sec_fb = fallback_extract(text, pats, window=2500)
-        sec = sec_fb or ""
-        fr = first_match_rule(text, pats)
-        if fr and not rule_id:
-            rule_id = fr or "fallback_patterns"
-    
-    cleaned = trim_synthese_block(sec or "")
-    
-    # Validierung: Zu kurze Schnipsel verwerfen
-    if cleaned and len(cleaned) < MIN_SYN_CHARS:
-        if re.search(r"CONCLUSION(S)?", cleaned, flags=re.I) and len(cleaned) >= 100:
-            logger.debug(f"{pdf.name}: Short conclusion accepted ({len(cleaned)} chars)")
-            return cleaned, (rule_id or "") + "|short_conclusion"
-        
-        logger.debug(f"{pdf.name}: Synthese too short ({len(cleaned)} chars), discarding")
-        cleaned = ""
-        rule_id = ""
-    
-    # ===================================================================
-    # STUFE 2: NUR WENN STUFE 1 NICHTS FAND - Pure Synthese Doc Check
-    # ===================================================================
-    if not cleaned:
-        if is_pure_synthese_doc(text):
-            full = text.strip()
-            cleaned = trim_synthese_block(full)
-            
-            if len(cleaned) >= 80:
-                logger.debug(f"{pdf.name}: Pure synthese doc, length={len(cleaned)}")
-                return cleaned, "pure_synthese_doc"
-            else:
-                logger.debug(f"{pdf.name}: Pure synthese doc too short ({len(cleaned)} chars)")
-                return "", "pure_synthese_too_short"
-    
-    # ===================================================================
-    # RÜCKGABE
-    # ===================================================================
-    if cleaned:
-        logger.debug(f"{pdf.name}: Synthese via {rule_id}, length={len(cleaned)}")
-    else:
-        logger.debug(f"{pdf.name}: No synthese found")
-        rule_id = "no_synthese_found"
-    
-    return cleaned or "", (rule_id or "")
 
+    if sec:
+        sec = trim_synthese_block(sec)
+        # KEIN len(sec) >= MIN_SYN_CHARS mehr als harte Bedingung
+        return sec, rule_id or "standard"
+
+    # 2) Pure-Synthèse-Fall: nur noch moderat nutzen
+    if is_pure_synthese_doc(text):
+        trimmed = trim_synthese_block(text)
+        # hier kann man eine moderate Mindestlänge lassen, z.B. 200
+        if len(trimmed) >= 200:
+            # zusätzlich auf eine maximale Länge kappen, z.B. 1200–1500 Zeichen
+            trimmed = trimmed[:1500]
+            last_period = trimmed.rfind(".")
+            if last_period > 400:
+                trimmed = trimmed[:last_period + 1]
+            return trimmed.strip(), "pure_synthese_doc"
+
+    # 3) Letzter Fallback: NICHT leer zurückgeben
+    # Lieber 1–2 Sätze rund um "L'essentiel"/"Synthèse de l'avis" als gar nichts
+    fb = fallback_synthese_from_summary_like_box(text)
+    if fb:
+        return fb, "fallback_summary_box"
+
+    return "", "no_synthese_found"
+
+def fallback_synthese_from_summary_like_box(full_text: str) -> str:
+    if not full_text:
+        return ""
+
+    t = " ".join(full_text.split())
+    t = _normalize_apostrophes(t)
+    low = t.lower()
+
+    for anchor in ["l'essentiel", "lessentiel", "synthèse de l'avis", "synthese de l'avis"]:
+        idx = low.find(anchor)
+        if idx != -1:
+            window = t[idx: idx + 1000]
+            # auf Sätze trimmen
+            sentences = re.split(r'(?<=[.!?])\s+', window)
+            # ein bis zwei Sätze nach dem Anchor reichen meist
+            core = " ".join(sentences[0:3]).strip()
+            if len(core) > 80:
+                return core
+    return ""
 
 def main() -> None:
     if len(sys.argv) < 4:
