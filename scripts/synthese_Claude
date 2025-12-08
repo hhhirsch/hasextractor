@@ -170,6 +170,12 @@ def extract_one(pdf: Path, cfg: dict) -> Tuple[str, str]:
 
     return "", "no_synthese_found"
 
+def _normalize_apostrophes(s: str) -> str:
+    """Normalisiert verschiedene Apostroph-Varianten aus PDFs (für Synthese-Fallbacks)."""
+    if not s:
+        return ""
+    return s.replace("’", "'").replace("`", "'")
+
 def fallback_synthese_from_summary_like_box(full_text: str) -> str:
     if not full_text:
         return ""
