@@ -1,7 +1,17 @@
-# shared_utils.py (fixed)
-import re, unicodedata
+# shared_utils.py
+from __future__ import annotations
+
+import re
+import unicodedata
+import hashlib
+import os
+import sys
+import shutil
+import time
+from datetime import datetime
 from pathlib import Path
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Optional, Dict, Any, Iterable, Union
+
 import yaml
 
 try:
@@ -9,9 +19,48 @@ try:
 except Exception as e:
     raise SystemExit("pdfminer.six ist nicht installiert. Bitte ausführen: py -m pip install pdfminer.six") from e
 
+
+# --------- Pattern-Helfer ---------
+
+PatternSpec = Union[str, Dict[str, Any]]
+
+
+def _normalize_pattern(spec: PatternSpec) -> Tuple[str, str]:
+    """
+    Normalisiert einen Pattern-Eintrag aus dem YAML.
+
+    Rückgabe:
+      (regex_string, rule_id)
+
+    Unterstützte Formen:
+      - "einfacher regex string"
+      - {pattern: "...", id: "..."} oder {regex: "...", rule_id: "..."}
+    """
+    if isinstance(spec, str):
+        return spec, ""
+
+    if isinstance(spec, dict):
+        pat = (
+            spec.get("pattern")
+            or spec.get("regex")
+            or ""
+        )
+        rid = (
+            spec.get("id")
+            or spec.get("rule_id")
+            or ""
+        )
+        return pat or "", rid or ""
+
+    return "", ""
+
+
+# --------- Allgemeine Utilities ---------
+
 def load_patterns(yaml_path: str | Path) -> dict:
     with open(yaml_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
 
 def normalize_text(text: str) -> str:
     """
@@ -62,18 +111,15 @@ def normalize_text(text: str) -> str:
     t = re.sub(r"(?<=\w)\s*\n\s*(?=\w)", " ", t)
 
     # 8) Broken Headings reparieren (v.a. "Indication concernée")
-    #    z.B. "Indication\nconcern\nee" -> "Indication concernée"
-    #    Wir fügen nur wieder zusammen, Akzente bleiben wie sie sind/fehlen.
     t = re.sub(
         r"(?i)\b(Indication|Indications?)\s*\n\s*(concern\S*)",
         r"\1 \2",
-        t
+        t,
     )
-    # manchmal steckt "concern" + Rest noch weiter unten
     t = re.sub(
         r"(?i)\b(Indication|Indications?)\s*\n\s*(concerne?e?)",
         r"\1 \2",
-        t
+        t,
     )
 
     # 9) Doppelte Leerzeichen reduzieren
@@ -84,11 +130,14 @@ def normalize_text(text: str) -> str:
 
     return t
 
+
 def read_pdf_text(path: Path) -> str:
     return _extract_text_pdfminer(str(path))
 
+
 def _compile(pat: str):
     return re.compile(pat, re.I | re.M)
+
 
 def split_by_headings_v3(text: str, options: Dict[str, Any]) -> List[Tuple[str, str]]:
     start_pat = _compile(options.get("start_heading", r"(?!)"))
@@ -98,136 +147,164 @@ def split_by_headings_v3(text: str, options: Dict[str, Any]) -> List[Tuple[str, 
     for j, i in enumerate(idxs):
         head = lines[i].strip()
         start = i + 1
-        end = idxs[j+1] if j+1 < len(idxs) else len(lines)
+        end = idxs[j + 1] if j + 1 < len(idxs) else len(lines)
         body = "\n".join(ln.strip() for ln in lines[start:end]).strip()
         blocks.append((head, body))
     return blocks
 
-def find_section_with_rule(blocks, patterns, min_chars=50):
+
+def find_section_with_rule(
+    blocks: List[str],
+    patterns: Iterable[PatternSpec],
+    min_chars: int = 200,
+) -> Tuple[str, str]:
     """
-    Findet Sections mit Pattern-Matching.
-    Unterstützt BEIDE Formate:
-    1. Einfache Strings: "(?i)INDICATION"
-    2. Strukturierte Dicts: {rule_id: ..., start: ..., end: ...}
-    
-    blocks: List[Tuple[str, str]] - (heading, body)
+    Sucht in den vorverarbeiteten Textblöcken nach einer Sektion anhand
+    von Heading-Mustern.
+
+    patterns kann eine Liste aus Strings ODER Dicts sein.
+    Rückgabe: (section_text, rule_id)
     """
-    if not patterns:
-        return None, ""
-    
-    for pat in patterns:
-        # NEU: Prüfe ob strukturiertes Pattern-Objekt
-        if isinstance(pat, dict):
-            # Strukturiertes Pattern mit start/end
-            rule_id = pat.get('rule_id', 'unknown')
-            start_marker = pat.get('start', '')
-            end_marker = pat.get('end', '')
-            pat_min_chars = pat.get('min_chars', min_chars)
-            
-            if not start_marker:
+    if not blocks:
+        return "", ""
+
+    for idx, spec in enumerate(patterns, start=1):
+        regex_str, rid = _normalize_pattern(spec)
+        if not regex_str:
+            continue
+
+        try:
+            rx = re.compile(regex_str, re.I | re.M)
+        except re.error:
+            # Ungültiges Regex im YAML → robust ignorieren
+            continue
+
+        for i, blk in enumerate(blocks):
+            if not blk:
                 continue
-            
-            # Verwende extract_with_start_end_markers für strukturierte Patterns
-            result = extract_with_start_end_markers(
-                blocks,
-                start_marker,
-                end_marker if end_marker else None,
-                min_chars=pat_min_chars
-            )
-            
-            if result and len(result) >= pat_min_chars:
-                return result, rule_id
-        
-        else:
-            # ALTE Logik: Einfacher String-Pattern
-            rx = re.compile(pat, re.I | re.M)
-            
-            for head, body in blocks:  # ← FIX: Unpack Tuple!
-                txt = body
-                if rx.search(txt) and len(txt) >= min_chars:
-                    return txt, pat[:50]  # Erste 50 Zeichen als rule_id
-    
-    return None, ""
+            if not rx.search(blk):
+                continue
+
+            # Ab hier: passenden Block + Folgetext zusammensetzen
+            section_parts = [blk]
+            for j in range(i + 1, len(blocks)):
+                nxt = blocks[j]
+                # Heuristik: neue große Überschrift = Abschnittsende
+                if re.match(r"(?m)^[A-Z0-9][A-Z0-9 \t\.\-]{3,}$", nxt.strip()):
+                    break
+                section_parts.append(nxt)
+
+            section = "\n\n".join(section_parts).strip()
+            if len(section) < min_chars:
+                continue
+
+            rule_id = rid or f"rule_{idx}"
+            return section, rule_id
+
+    return "", ""
 
 
-def extract_with_start_end_markers(blocks, start_pattern, end_pattern=None, min_chars=50):
+def extract_with_start_end_markers(
+    blocks: List[Tuple[str, str]],
+    start_pattern: str,
+    end_pattern: Optional[str] = None,
+    min_chars: int = 50,
+) -> str:
     """
     Extrahiert Text zwischen start_pattern und end_pattern.
     blocks: List[Tuple[str, str]] - (heading, body)
     """
-    # Rekonstruiere full_text aus blocks (heading + body)
-    parts = []
-    for head, body in blocks:  # ← FIX: Unpack Tuple!
+    parts: List[str] = []
+    for head, body in blocks:
         if head:
             parts.append(head)
         if body:
             parts.append(body)
-    
+
     full_text = "\n\n".join(parts)
-    
+
     try:
         start_rx = re.compile(start_pattern, re.I | re.M)
         m_start = start_rx.search(full_text)
-        
+
         if not m_start:
             return ""
-        
+
         start_pos = m_start.end()
-        
+
         if end_pattern:
             end_rx = re.compile(end_pattern, re.I | re.M)
             m_end = end_rx.search(full_text[start_pos:])
-            
+
             if m_end:
                 end_pos = start_pos + m_end.start()
                 extracted = full_text[start_pos:end_pos].strip()
             else:
-                # Kein Ende gefunden, nimm bis zum nächsten großen Abschnitt
-                extracted = full_text[start_pos:start_pos+2000].strip()
+                # Kein Ende gefunden, nimm ein Fenster
+                extracted = full_text[start_pos:start_pos + 2000].strip()
         else:
-            # Kein end_pattern, nimm bis zum nächsten Abschnitt
-            extracted = full_text[start_pos:start_pos+1500].strip()
-        
+            extracted = full_text[start_pos:start_pos + 1500].strip()
+
         if len(extracted) >= min_chars:
             return extracted
-        
+
     except re.error as e:
         import logging
         logging.warning(f"Regex error: {e}")
-    
+
     return ""
 
 
-def fallback_extract(text: str, target_patterns: List, window: int = 1400) -> Optional[str]:
+def fallback_extract(
+    text: str,
+    patterns: Iterable[PatternSpec],
+    window: int = 1500,
+) -> str:
     """
-    Fallback-Extraktion.
-    Unterstützt BEIDE Pattern-Typen: Strings und Dicts.
+    Fallback-Extraktion im Volltext:
+      – Sucht nach den Patterns im Raw-Text
+      – Gibt ein Fenster (± window/2 Zeichen um den Match) zurück.
+
+    patterns kann Strings oder Dicts enthalten.
+    Gibt NUR den Text zurück (kein rule_id).
     """
-    for pat in target_patterns:
-        # Wenn dict, extrahiere start-Pattern
-        if isinstance(pat, dict):
-            pat_str = pat.get('start', '')
-            if not pat_str:
-                continue
-        else:
-            pat_str = pat
-        
+    if not text:
+        return ""
+
+    best_snippet = ""
+    best_len = 0
+
+    for spec in patterns:
+        regex_str, _ = _normalize_pattern(spec)
+        if not regex_str:
+            continue
+
         try:
-            m = re.search(pat_str, text, re.I | re.M)
-            if m:
-                start = max(0, m.start())
-                end = min(len(text), start + window)
-                return text[start:end].strip()
+            rx = re.compile(regex_str, re.I | re.M)
         except re.error:
             continue
-    
-    return None
+
+        m = rx.search(text)
+        if not m:
+            continue
+
+        start = max(0, m.start() - window // 3)
+        end = min(len(text), m.end() + 2 * window // 3)
+        snippet = text[start:end].strip()
+
+        if len(snippet) > best_len:
+            best_snippet = snippet
+            best_len = len(snippet)
+
+    return best_snippet
+
 
 def iter_pdfs(input_path: Path):
     if input_path.is_dir():
         yield from sorted(input_path.glob("**/*.pdf"))
     else:
         yield input_path
+
 
 def write_csv(rows, out: Path):
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -238,10 +315,6 @@ def write_csv(rows, out: Path):
         for r in rows:
             w.writerow(r)
 
-import hashlib, os, sys, shutil, time
-from datetime import datetime
-
-import re
 
 INDICATION_NOISE_LINES = [
     r"^sécurité\s+sociale",
@@ -254,6 +327,7 @@ INDICATION_NOISE_LINES = [
     r"^page\s+\d+/\d+",
     r"^\*+\s*$",
 ]
+
 
 def clean_indication_block(text: str) -> str:
     """
@@ -272,33 +346,36 @@ def clean_indication_block(text: str) -> str:
         if len(stripped) <= 2:
             continue
 
-        # typische Müll-Zeilen nach Liste oben filtern
         lower = stripped.lower()
         if any(re.match(pat, lower) for pat in INDICATION_NOISE_LINES):
             continue
 
         cleaned_lines.append(ln)
 
-    # am Ende noch doppelte Leerzeilen reduzieren
     joined = "\n".join(cleaned_lines)
     joined = re.sub(r"\n{3,}", "\n\n", joined).strip()
     return joined
+
 
 def make_doc_id(file_path: str) -> str:
     try:
         size = os.path.getsize(file_path)
     except OSError:
         size = 0
-    h = hashlib.sha1((file_path + "::" + str(size)).encode("utf-8"), usedforsecurity=False)
+    h = hashlib.sha1(
+        (file_path + "::" + str(size)).encode("utf-8"),
+        usedforsecurity=False,
+    )
     return h.hexdigest()[:12]  # kurz & stabil
+
 
 def first_match_rule(text: str, patterns: list[str]) -> str | None:
     """Gibt die erste Pattern-Regex zurück, die matcht (als einfache rule_id)."""
-    import re
     for i, pat in enumerate(patterns):
         if re.search(pat, text, re.I | re.M):
-            return f"pat_{i+1}"
+            return f"pat_{i + 1}"
     return None
+
 
 def detect_document_type(text: str) -> str:
     """
@@ -320,6 +397,7 @@ def detect_document_type(text: str) -> str:
 
     return "standard"
 
+
 def detect_cpd_document(text: str) -> bool:
     """
     Spezifischer CPD-Check (für TRELEGY/ELEBRATO etc.).
@@ -339,14 +417,13 @@ def synthese_from_cpd(text: str) -> str:
     if not text:
         return ""
 
-    import re
     # Wir suchen L'ESSENTIEL und nehmen danach 300–1500 Zeichen als Synthese
     m = re.search(r"(?mi)L['’]ESSENTIEL(.{300,1500})", text, re.S)
     if not m:
         return ""
 
     body = m.group(1).strip()
-    synth = "L'ESSENTIEL" + "\n" + body
+    synth = "L'ESSENTIEL\n" + body
 
     # grob auf 1500 Zeichen beschränken, an Satzende schneiden
     if len(synth) > 1500:
@@ -361,6 +438,7 @@ def synthese_from_cpd(text: str) -> str:
 
 
 # --- Start-/Endsignal + Fortschrittsbalken ---
+
 def start_signal(job_name: str, total: int):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n=== {job_name} gestartet @ {ts} ===")
@@ -370,15 +448,17 @@ def start_signal(job_name: str, total: int):
     except Exception:
         pass
 
+
 def progress_bar(i: int, total: int, width: int = 30, prefix: str = ""):
-    if total <= 0: total = 1
+    if total <= 0:
+        total = 1
     pct = int(i * 100 / total)
     filled = int(width * pct / 100)
     bar = "#" * filled + "-" * (width - filled)
     msg = f"\r{prefix}[{bar}] {pct:3d}%  ({i}/{total})"
     print(msg, end='', flush=True)
 
+
 def end_signal(job_name: str):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n=== {job_name} fertig @ {ts} ===\n")
-
