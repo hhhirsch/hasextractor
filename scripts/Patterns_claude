@@ -7,144 +7,125 @@ options:
   start_heading: "(?mi)^(?:\\d{1,2}(?:\\.\\d{1,2}){0,3}[\\)\\.]?[ \\t]*)?(?:INDICATIONS? TH[ÉE]RAPEUTIQUES|INDICATIONS? DE L['']AMM|INDICATIONS?|POPULATION(?:\\s+CIBLE)?|PATIENTS? CONCERN[ÉE]S?|SOUS-?POPULATION|SOUS-?GROUPE|COMPARATEURS?(?:\\s+CLINIQUEMENT\\s+PERTINENTS)?|M[ÉE]DICAMENTS? DE COMPARAISON|DISCUSSION|ANALYSE|SYNTH[ÈE]SE|CONCLUSION|CONCLUSIONS? DE LA COMMISSION|L['']ESSENTIEL|SERVICE M[ÉE]DICAL RENDU|SMR|ASMR|POPULATION CIBLE)\\b"
   strip_whitespace: true
 
+targets:  # ← DIESE ZEILE HINZUFÜGEN!
+  Indication:
+    min_chars: 50
+    max_length: 2000
+    patterns:
+      # GRUPPE A: PIS_INS/REEV/RI - Klassische CT-Avis
+      - rule_id: indications_therapeutiques_section
+        start: '(?mi)^\s*\d{2}[\s.]*INDICATIONS?\s+TH[ÉE]RAPEUTIQUES?\b'
+        end: '(?mi)^\s*\d{2}[\s.]*(?:CONTEXTE|CONCLUSIONS?|RAPPEL|SERVICE\s+M[ÉE]DICAL|ENVIRONNEMENT|SYNTH[ÈE]SE|COMPARATEURS?|POPULATION\s+CIBLE)'
+        min_chars: 80
+      
+      - rule_id: indication_concernee_tableau
+        start: '(?i)Indication\s+concern[ée]e\s+par\s+l[''']?[ée]valuation'
+        end: '(?mi)^\s*(?:Posologie|Comparateurs?|Service\s+m[ée]dical|Population)'
+        min_chars: 50
+      
+      - rule_id: indication_amm_tableau
+        start: '(?i)Indication\s+de\s+l[''']?AMM'
+        end: '(?mi)^\s*(?:Posologie|Comparateurs?|Date\s+d[''']AMM)'
+        min_chars: 50
+      
+      - rule_id: indications_rcp_tableau
+        start: '(?mi)^Indications?\s*$'
+        end: '(?mi)^(?:Posologie|Contre-indications?|4\.[0-9]|Mises\s+en\s+garde)'
+        min_chars: 40
+      
+      - rule_id: indication_concernee_generic
+        start: '(?i)Indication\(s\)\s+concern[ée]e\(s\)'
+        end: '(?mi)^\s*(?:[A-Z]{4,}|Liste\s+des\s+sp[ée]cialit[ée]s)'
+        min_chars: 50
+      
+      - rule_id: indication_amm_sentence
+        start: '(?i)(?:L[''']indication\s+de\s+l[''']AMM|Indication\s+retenue)\s*:\s*[«"]'
+        end: '[»"]'
+        min_chars: 40
+      
+      - rule_id: indication_heading_generic
+        start: '(?mi)^\s*(?:\d{1,2}[\s.]*)?INDICATIONS?\b'
+        end: '(?mi)^\s*(?:\d{1,2}[\s.]*)?[A-Z]{4,}'
+        min_chars: 50
 
-Indication:
-  min_chars: 50
-  max_length: 2000
-  patterns:
-    # GRUPPE A: PIS_INS/REEV/RI - Klassische CT-Avis
-    - rule_id: indications_therapeutiques_section
-      start: '(?mi)^\s*\d{2}[\s.]*INDICATIONS?\s+TH[ÉE]RAPEUTIQUES?\b'
-      end: '(?mi)^\s*\d{2}[\s.]*(?:CONTEXTE|CONCLUSIONS?|RAPPEL|SERVICE\s+M[ÉE]DICAL|ENVIRONNEMENT|SYNTH[ÈE]SE|COMPARATEURS?|POPULATION\s+CIBLE)'
-      min_chars: 80
-    
-    # GRUPPE B: PIC_EI/AP - Contexte-Tableau
-    - rule_id: indication_concernee_tableau
-      start: '(?i)Indication\s+concern[ée]e\s+par\s+l[''']?[ée]valuation'
-      end: '(?mi)^\s*(?:Posologie|Comparateurs?|Service\s+m[ée]dical|Population)'
-      min_chars: 50
-    
-    - rule_id: indication_amm_tableau
-      start: '(?i)Indication\s+de\s+l[''']?AMM'
-      end: '(?mi)^\s*(?:Posologie|Comparateurs?|Date\s+d[''']AMM)'
-      min_chars: 50
-    
-    # GRUPPE C: PIS_RCP - Kopftabelle
-    - rule_id: indications_rcp_tableau
-      start: '(?mi)^Indications?\s*$'
-      end: '(?mi)^(?:Posologie|Contre-indications?|4\.[0-9]|Mises\s+en\s+garde)'
-      min_chars: 40
-    
-    # Fallback 1: Indication concernée(s) generisch
-    - rule_id: indication_concernee_generic
-      start: '(?i)Indication\(s\)\s+concern[ée]e\(s\)'
-      end: '(?mi)^\s*(?:[A-Z]{4,}|Liste\s+des\s+sp[ée]cialit[ée]s)'
-      min_chars: 50
-    
-    # Fallback 2: AMM-Satz im Fließtext
-    - rule_id: indication_amm_sentence
-      start: '(?i)(?:L[''']indication\s+de\s+l[''']AMM|Indication\s+retenue)\s*:\s*[«"]'
-      end: '[»"]'
-      min_chars: 40
-    
-    # Fallback 3: Klassische Überschriften
-    - rule_id: indication_heading_generic
-      start: '(?mi)^\s*(?:\d{1,2}[\s.]*)?INDICATIONS?\b'
-      end: '(?mi)^\s*(?:\d{1,2}[\s.]*)?[A-Z]{4,}'
-      min_chars: 50
+  Population:
+    min_chars: 40
+    max_length: 1200
+    patterns:
+      - "(?mi)^\\s*(?:\\d{1,2}(?:\\.\\d{1,2}){0,2}[\\)\\.]?\\s*)?POPULATION(?:\\s+CIBLE)?\\b"
+      - "(?mi)^\\s*(?:\\d{1,2}[\\. \\t]*)?PATIENTS?\\s+CONCERN[ÉE]S?\\b"
+      - "(?mi)\\bPOPULATION\\s+CIBLE\\b"
+      - "(?mi)\\bla\\s+population\\s+cible\\b"
+      - "(?mi)\\bpopulation\\s+cible\\s+d[ée]j[àa]\\s+estim[ée]e?s?\\b"
+      - "(?mi)\\bn['']est pas de nature [àa] modifier les populations cibles\\b"
 
+  Subpopulation:
+    min_chars: 20
+    max_length: 800
+    patterns:
+      - "(?mi)^(?:\\d{1,2}[\\. \\t]*)?SOUS-?POPULATION(S)?\\b"
+      - "(?mi)^(?:\\d{1,2}[\\. \\t]*)?SOUS-?GROUPE(S)?\\b"
+      - "(?mi)\\banalyses?\\s+en\\s+sous-?groupe\\b"
 
-Population:
-  min_chars: 40
-  max_length: 1200
-  patterns:
-    - "(?mi)^\\s*(?:\\d{1,2}(?:\\.\\d{1,2}){0,2}[\\)\\.]?\\s*)?POPULATION(?:\\s+CIBLE)?\\b"
-    - "(?mi)^\\s*(?:\\d{1,2}[\\. \\t]*)?PATIENTS?\\s+CONCERN[ÉE]S?\\b"
-    - "(?mi)\\bPOPULATION\\s+CIBLE\\b"
-    - "(?mi)\\bla\\s+population\\s+cible\\b"
-    - "(?mi)\\bpopulation\\s+cible\\s+d[ée]j[àa]\\s+estim[ée]e?s?\\b"
-    - "(?mi)\\bn['']est pas de nature [àa] modifier les populations cibles\\b"
+  Comparateur:
+    min_chars: 80
+    max_length: 1000
+    patterns:
+      - rule_id: comparateurs_07_block
+        start: '(?mi)^\s*(?:0?7|7[\s.)\]]*)\s*COMPARATEURS?\s+CLINIQUEMENT\s+PERTINENTS?'
+        end: '(?mi)^\s*(?:0?8|8[\s.)\]]*)\s*(?:INFORMATIONS?\s+SUR\s+LE\s+MEDICAMENT|PLACE\s+DANS\s+LA\s+STRAT[ÉE]GIE|SERVICE\s+M[ÉE]DICAL|SMR)'
+        min_chars: 150
+      
+      - rule_id: traitements_reference_block
+        start: '(?mi)^\s*(?:0?7|7[\s.)\]]*)\s*TRAITEMENTS?\s+DE\s+R[ÉE]F[ÉE]RENCE'
+        end: '(?mi)^\s*(?:0?8|8[\s.)\]]*)'
+        min_chars: 100
+      
+      - rule_id: comparateurs_freetext
+        start: '(?i)comparateurs?\s+cliniquement\s+pertinents?'
+        end: '(?mi)^\s*(?:[A-Z]{4,}|CONCLUSION|Les\s+comparateurs)'
+        min_chars: 80
+      
+      - rule_id: traitement_reference_freetext
+        start: '(?i)traitement(?:s)?\s+de\s+r[ée]f[ée]rence'
+        end: '(?mi)^\s*[A-Z]{4,}'
+        min_chars: 60
 
-
-Subpopulation:
-  min_chars: 20
-  max_length: 800
-  patterns:
-    - "(?mi)^(?:\\d{1,2}[\\. \\t]*)?SOUS-?POPULATION(S)?\\b"
-    - "(?mi)^(?:\\d{1,2}[\\. \\t]*)?SOUS-?GROUPE(S)?\\b"
-    - "(?mi)\\banalyses?\\s+en\\s+sous-?groupe\\b"
-
-
-Comparateur:
-  min_chars: 80
-  max_length: 1000
-  patterns:
-    # Primär: Kapitel 07 COMPARATEURS (höchste Qualität)
-    - rule_id: comparateurs_07_block
-      start: '(?mi)^\s*(?:0?7|7[\s.)\]]*)\s*COMPARATEURS?\s+CLINIQUEMENT\s+PERTINENTS?'
-      end: '(?mi)^\s*(?:0?8|8[\s.)\]]*)\s*(?:INFORMATIONS?\s+SUR\s+LE\s+MEDICAMENT|PLACE\s+DANS\s+LA\s+STRAT[ÉE]GIE|SERVICE\s+M[ÉE]DICAL|SMR)'
-      min_chars: 150
-    
-    # Variante: TRAITEMENTS DE RÉFÉRENCE (PIC_EI neu)
-    - rule_id: traitements_reference_block
-      start: '(?mi)^\s*(?:0?7|7[\s.)\]]*)\s*TRAITEMENTS?\s+DE\s+R[ÉE]F[ÉE]RENCE'
-      end: '(?mi)^\s*(?:0?8|8[\s.)\]]*)'
-      min_chars: 100
-    
-    # Fallback: Fließtext-Passage mit "comparateurs cliniquement pertinents"
-    - rule_id: comparateurs_freetext
-      start: '(?i)comparateurs?\s+cliniquement\s+pertinents?'
-      end: '(?mi)^\s*(?:[A-Z]{4,}|CONCLUSION|Les\s+comparateurs)'
-      min_chars: 80
-    
-    # Fallback 2: "Traitement de référence" im Text
-    - rule_id: traitement_reference_freetext
-      start: '(?i)traitement(?:s)?\s+de\s+r[ée]f[ée]rence'
-      end: '(?mi)^\s*[A-Z]{4,}'
-      min_chars: 60
-
-Synthese:
-  min_chars: 150
-  max_length: 6000
-  patterns:
-    # S1: Neues AVIS Layout (höchste Priorität)
-    - rule_id: synthese_avis_section
-      start: '(?i)synth[èe]se\s+de\s+l[''']avis'
-      end: '^\s*[0-9]+[\).]\s*(?:Contexte|Indication|M[ée]thode)'
-      min_chars: 300
-    
-    # S3: Klassische CONCLUSIONS DE LA COMMISSION
-    - rule_id: conclusions_commission
-      start: '(?mi)^\s*(?:\d{1,2}[\s.]*)?CONCLUSIONS?\s+DE\s+LA\s+COMMISSION(?:\s+DE\s+LA\s+TRANSPARENCE)?\b'
-      end: '(?mi)(?:^\s*(?:\d{1,2}[\s.]*)?(?:RECOMMANDATIONS?|ANNEXE|Programme|Bibliographie)|\Z)'
-      min_chars: 150
-    
-    # S6: PIC_REEV Compte tenu / En conséquence
-    - rule_id: compte_tenu_consequence
-      start: 'Compte\s+tenu\s*:'
-      end: '(?:En\s+conséquence|Ainsi|Par\s+cons[ée]quent).*?[.!]'
-      min_chars: 200
-    
-    # Fallback 1: Einfache CONCLUSIONS
-    - rule_id: conclusions_simple
-      start: '(?mi)^\s*(?:\d{1,2}[\s.]*)?CONCLUSIONS?\b'
-      end: '(?mi)(?:^\s*(?:\d{1,2}[\s.]*)?[A-Z]{4,}|\Z)'
-      min_chars: 150
-    
-    # Fallback 2: SYNTHÈSE allgemein
-    - rule_id: synthese_general
-      start: '(?mi)^\s*(?:\d{1,2}[\s.]*)?SYNTH[ÈE]SE\b'
-      end: '(?mi)(?:^\s*(?:\d{1,2}[\s.]*)?[A-Z]{4,}|\Z)'
-      min_chars: 150
-    
-    # Fallback 3: L'ESSENTIEL (4-Seiten-Avis)
-    - rule_id: lessentiel
-      start: '(?mi)^\s*L[''']ESSENTIEL\b'
-      end: '(?:Quel\s+progr[èe]s|^\s*[0-9]+[\s.])'
-      min_chars: 100
-    
-    # Fallback 4: AVIS/POSITION DE LA COMMISSION
-    - rule_id: avis_commission
-      start: '(?mi)^\s*(?:\d{1,2}[\s.]*)?(?:AVIS|POSITION)\s+DE\s+LA\s+COMMISSION\b'
-      end: '(?mi)(?:^\s*(?:\d{1,2}[\s.]*)?[A-Z]{4,}|\Z)'
-      min_chars: 150
+  Synthese:
+    min_chars: 150
+    max_length: 6000
+    patterns:
+      - rule_id: synthese_avis_section
+        start: '(?i)synth[èe]se\s+de\s+l[''']avis'
+        end: '^\s*[0-9]+[\).]\s*(?:Contexte|Indication|M[ée]thode)'
+        min_chars: 300
+      
+      - rule_id: conclusions_commission
+        start: '(?mi)^\s*(?:\d{1,2}[\s.]*)?CONCLUSIONS?\s+DE\s+LA\s+COMMISSION(?:\s+DE\s+LA\s+TRANSPARENCE)?\b'
+        end: '(?mi)(?:^\s*(?:\d{1,2}[\s.]*)?(?:RECOMMANDATIONS?|ANNEXE|Programme|Bibliographie)|\Z)'
+        min_chars: 150
+      
+      - rule_id: compte_tenu_consequence
+        start: 'Compte\s+tenu\s*:'
+        end: '(?:En\s+conséquence|Ainsi|Par\s+cons[ée]quent).*?[.!]'
+        min_chars: 200
+      
+      - rule_id: conclusions_simple
+        start: '(?mi)^\s*(?:\d{1,2}[\s.]*)?CONCLUSIONS?\b'
+        end: '(?mi)(?:^\s*(?:\d{1,2}[\s.]*)?[A-Z]{4,}|\Z)'
+        min_chars: 150
+      
+      - rule_id: synthese_general
+        start: '(?mi)^\s*(?:\d{1,2}[\s.]*)?SYNTH[ÈE]SE\b'
+        end: '(?mi)(?:^\s*(?:\d{1,2}[\s.]*)?[A-Z]{4,}|\Z)'
+        min_chars: 150
+      
+      - rule_id: lessentiel
+        start: '(?mi)^\s*L[''']ESSENTIEL\b'
+        end: '(?:Quel\s+progr[èe]s|^\s*[0-9]+[\s.])'
+        min_chars: 100
+      
+      - rule_id: avis_commission
+        start: '(?mi)^\s*(?:\d{1,2}[\s.]*)?(?:AVIS|POSITION)\s+DE\s+LA\s+COMMISSION\b'
+        end: '(?mi)(?:^\s*(?:\d{1,2}[\s.]*)?[A-Z]{4,}|\Z)'
+        min_chars: 150
