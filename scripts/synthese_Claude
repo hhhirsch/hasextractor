@@ -39,6 +39,9 @@ SYN_STOP_MARKERS = [
     r"^\s*ANNEXE[S]?\b",
     r"^\s*Annexe[s]?\b",
     r"^\s*RAPPEL\s+DU\s+SERVICE\s+M[ÉE]DICAL\s+RENDU\b",
+    r"^\s*SERVICE\s+M[ÉE]DICAL\s+RENDU\b",
+    r"^\s*SMR\b",
+    r"^\s*ASMR\b",
 ]
 
 SYN_STOP_RE = re.compile("|".join(SYN_STOP_MARKERS), re.I | re.M)
