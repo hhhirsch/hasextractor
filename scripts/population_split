@@ -157,7 +157,9 @@ def trim_population_block(text: str) -> str:
 
 def _normalize_apostrophes(s: str) -> str:
     """Normalisiert verschiedene Apostroph-Varianten aus PDFs."""
-    return s.replace("'", "'").replace("`", "'").replace("'", "'")
+    if not s:
+        return ""
+    return s.replace("’", "'").replace("`", "'")
 
 def fallback_population_from_indication(ind_text: str) -> str:
     """Fallback: Extrahiert Population-Infos aus Indication (robust für Akzente)."""
@@ -384,60 +386,56 @@ def extract_one(pdf: Path, cfg: dict, ind_map: Dict[str, str]) -> Tuple[str, str
     pop_target = cfg.get("targets", {}).get("Population", {})
     pop_pats = pop_target.get("patterns", [])
     pop_min_chars = int(pop_target.get("min_chars", MIN_POP_CHARS))
-    
+
     raw = read_pdf_text(pdf)
     text = normalize_text(raw)
     blocks = split_by_headings_v3(text, options)
     doc_id = make_doc_id(str(pdf))
-    
+
     # 1) Standard Population-Section
     pop, pop_rule = _safe_section_and_rule(
         find_section_with_rule(blocks, pop_pats, min_chars=pop_min_chars)
     )
-    
+
     if not pop:
         pop_fb = fallback_extract(text, pop_pats, window=1000)
         pop = pop_fb or ""
         if pop:
             pop_rule = first_match_rule(text, pop_pats) or "fallback_patterns"
-    
-    # ✅ FIX 1: Korrekte Einrückung!
+
+    # 2) Trimmen + Längenvalidierung
     pop = trim_population_block(pop or "")
     if pop:
         pop, pop_status = validate_population_length(pop)
         if not pop:
-            logger.debug(f"{pdf.name}: Population rejected: {pop_status}")
+            logger.debug("%s: Population rejected: %s", pdf.name, pop_status)
             pop_rule = pop_status
-    
-    # ✅ NEU: Regel D - Epidemiologie abtrennen
+
+    # 3) Epidemiologie abtrennen
     if pop:
         pop, _ = clean_population_block_v2(pop)
-    
-    # ✅ NEU: Regel C - Numerik-Check + Fallback auf Indikation
+
+    # 4) Numerik-Check + Fallbacks (Indication + Summary)
     if not pop or looks_numeric_only(pop):
         ind = ind_map.get(doc_id, "")
-        
-        # Fallback 1: aus Indication
+
         fb_ind = fallback_population_from_indication(ind)
-        
-        # Fallback 2: aus Summary
         fb_summary = fallback_population_from_summary(text)
-        
-        # Wähle besten Kandidaten
+
         candidates = [
-            (pop, len(pop or ""), 'section', pop_rule),
-            (fb_summary, len(fb_summary or ""), 'summary', 'from_summary'),
-            (fb_ind, len(fb_ind or ""), 'indication', 'from_indication'),
+            (pop,         len(pop or ""),         "section",    pop_rule),
+            (fb_summary,  len(fb_summary or ""),  "summary",    "from_summary"),
+            (fb_ind,      len(fb_ind or ""),      "indication", "from_indication"),
         ]
-        
+
         pop, pop_rule = select_best_population_candidate(candidates)
-    
+
     # 5) Subpopulation - zweistufige Extraktion
     sub = ""
     sub_rule = ""
 
     if pop and len(pop) >= MIN_POP_CHARS:
-        # STUFE 1: Versuche explizite Subpopulation-Section aus YAML
+        # STUFE 1: explizite Subpopulation-Section aus YAML
         sub_target = cfg.get("targets", {}).get("Subpopulation", {})
         sub_pats = sub_target.get("patterns", [])
 
@@ -455,7 +453,6 @@ def extract_one(pdf: Path, cfg: dict, ind_map: Dict[str, str]) -> Tuple[str, str
         if not sub:
             sub_candidate = infer_sub_from_population(pop)
             if sub_candidate:
-                # Duplikate-Check
                 if sub_candidate.strip() == pop.strip():
                     logger.debug(
                         "%s: Subpopulation identical to population, discarding",
@@ -465,9 +462,11 @@ def extract_one(pdf: Path, cfg: dict, ind_map: Dict[str, str]) -> Tuple[str, str
                     cleaned = validate_and_trim_subpopulation(sub_candidate, pop)
                     if cleaned:
                         sub = cleaned
-                        # nur setzen, wenn wir nicht schon eine Section-Regel haben
                         if not sub_rule:
                             sub_rule = "inferred"
+
+    # 6) Immer einen definierten Rückgabewert liefern
+    return pop or "", sub or "", pop_rule or "", sub_rule or ""
   
 def main() -> None:
     if len(sys.argv) < 5:
@@ -505,13 +504,13 @@ def main() -> None:
             doc_id = make_doc_id(str(pdf))
             
             rows.append([
-                str(pdf),
-                doc_id,
-                PATTERN_VERSION,
-                pop_txt or "",
-                sub_txt or "",
-                pop_rule or "",
-                sub_rule or "",
+                str(pdf),        # pdf_path
+                doc_id,          # doc_id
+                PATTERN_VERSION, # pattern_version
+                pop_txt or "",   # population
+                sub_txt or "",   # subpopulation
+                pop_rule or "",  # rule_population
+                sub_rule or "",  # rule_subpopulation
             ])
             
         except Exception as e:
@@ -537,7 +536,16 @@ def main() -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f, delimiter=";")
-        w.writerow(["file", "doc_id", "pattern_version", "Population", "Subpopulation", "rule_id_population", "rule_id_subpopulation"])
+        w.writerow([
+        "pdf_path",
+        "doc_id",
+        "pattern_version",
+        "population",
+        "subpopulation",
+        "rule_population",
+        "rule_subpopulation",
+    ])
+
         w.writerows(rows)
     
     logger.info(f"Processed {len(pdfs)} PDFs, saved to {out}")
