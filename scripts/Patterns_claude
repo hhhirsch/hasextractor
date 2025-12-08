@@ -7,12 +7,11 @@ options:
   start_heading: "(?mi)^(?:\\d{1,2}(?:\\.\\d{1,2}){0,3}[\\)\\.]?[ \\t]*)?(?:INDICATIONS? TH[ÉE]RAPEUTIQUES|INDICATIONS? DE L['']AMM|INDICATIONS?|POPULATION(?:\\s+CIBLE)?|PATIENTS? CONCERN[ÉE]S?|SOUS-?POPULATION|SOUS-?GROUPE|COMPARATEURS?(?:\\s+CLINIQUEMENT\\s+PERTINENTS)?|M[ÉE]DICAMENTS? DE COMPARAISON|DISCUSSION|ANALYSE|SYNTH[ÈE]SE|CONCLUSION|CONCLUSIONS? DE LA COMMISSION|L['']ESSENTIEL|SERVICE M[ÉE]DICAL RENDU|SMR|ASMR|POPULATION CIBLE)\\b"
   strip_whitespace: true
 
-targets:  # ← DIESE ZEILE HINZUFÜGEN!
+targets:
   Indication:
     min_chars: 50
     max_length: 2000
     patterns:
-      # GRUPPE A: PIS_INS/REEV/RI - Klassische CT-Avis
       - rule_id: indications_therapeutiques_section
         start: '(?mi)^\s*\d{2}[\s.]*INDICATIONS?\s+TH[ÉE]RAPEUTIQUES?\b'
         end: '(?mi)^\s*\d{2}[\s.]*(?:CONTEXTE|CONCLUSIONS?|RAPPEL|SERVICE\s+M[ÉE]DICAL|ENVIRONNEMENT|SYNTH[ÈE]SE|COMPARATEURS?|POPULATION\s+CIBLE)'
